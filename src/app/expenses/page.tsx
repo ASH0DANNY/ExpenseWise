@@ -76,6 +76,7 @@ import {
     AlertDialogTitle,
     AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 
 // Query Keys
 const EXPENSES_QUERY_KEY = "expenses";
@@ -133,6 +134,7 @@ export default function ExpensesPage() {
        const querySnapshot = await getDocs(q);
        return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
      },
+     staleTime: 1000 * 60 * 5, // Cache categories for 5 minutes
    });
 
    // Fetch Vendors
@@ -143,6 +145,7 @@ export default function ExpensesPage() {
        const querySnapshot = await getDocs(q);
        return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Vendor));
      },
+     staleTime: 1000 * 60 * 5, // Cache vendors for 5 minutes
    });
 
   // Combined loading state
@@ -163,6 +166,8 @@ export default function ExpensesPage() {
     onSuccess: (newExpense) => {
         queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY] });
         queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] }); // Invalidate dashboard summary too
+        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'all'] }); // Invalidate all expenses on dashboard
+        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'recent'] }); // Invalidate recent expenses on dashboard
         toast({
           title: "Expense Added",
           description: `Added ${newExpense.category} expense of $${newExpense.amount.toFixed(2)}.`,
@@ -192,8 +197,23 @@ export default function ExpensesPage() {
        return id; // Return deleted ID for UI feedback
      },
      onSuccess: (deletedId) => {
+        // Update the local cache immediately for faster UI feedback
+        queryClient.setQueryData<Expense[]>([EXPENSES_QUERY_KEY], (oldData) =>
+            oldData ? oldData.filter((exp) => exp.id !== deletedId) : []
+        );
+        queryClient.setQueryData<Expense[]>([EXPENSES_QUERY_KEY, 'recent'], (oldData) =>
+            oldData ? oldData.filter((exp) => exp.id !== deletedId) : []
+        );
+         queryClient.setQueryData<Expense[]>([EXPENSES_QUERY_KEY, 'all'], (oldData) =>
+             oldData ? oldData.filter((exp) => exp.id !== deletedId) : []
+         );
+
+        // Invalidate queries to ensure consistency with the backend
         queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY] });
         queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] }); // Invalidate dashboard summary too
+        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'all'] });
+        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'recent'] });
+
         toast({
          title: "Expense Deleted",
          description: `Successfully removed the expense record.`,
@@ -398,21 +418,25 @@ export default function ExpensesPage() {
             <CardDescription>View all recorded expenses.</CardDescription>
           </CardHeader>
           <CardContent>
-             <div className="overflow-x-auto">
+             <div className="overflow-x-auto"> {/* Add horizontal scroll for small screens */}
                 {isLoadingExpenses ? (
-                    <div className="flex justify-center items-center p-4">
-                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                        <span className="ml-2 text-muted-foreground">Loading expenses...</span>
-                    </div>
+                     <div className="space-y-2">
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                     </div>
                 ) : (
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Date</TableHead>
+                          <TableHead className="whitespace-nowrap">Date</TableHead>
                           <TableHead>Category</TableHead>
                           <TableHead>Vendor</TableHead>
                           <TableHead>Notes</TableHead>
-                          <TableHead className="text-right">Amount</TableHead>
+                          <TableHead className="text-right whitespace-nowrap">Amount</TableHead>
                           <TableHead>Actions</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -426,13 +450,13 @@ export default function ExpensesPage() {
                         )}
                         {expenses.map((expense) => (
                           <TableRow key={expense.id}>
-                            <TableCell>{format(timestampToDate(expense.date), "yyyy-MM-dd")}</TableCell>
+                            <TableCell className="whitespace-nowrap">{format(timestampToDate(expense.date), "yyyy-MM-dd")}</TableCell>
                             <TableCell><Badge variant="secondary">{expense.category}</Badge></TableCell>
-                            <TableCell>{expense.vendor || "-"}</TableCell>
-                             <TableCell className="max-w-[150px] truncate" title={expense.notes ?? undefined}>
+                            <TableCell className="whitespace-nowrap">{expense.vendor || "-"}</TableCell>
+                             <TableCell className="max-w-[150px] sm:max-w-[250px] truncate whitespace-normal break-words" title={expense.notes ?? undefined}>
                                 {expense.notes || "-"}
                              </TableCell>
-                            <TableCell className="text-right">${expense.amount.toFixed(2)}</TableCell>
+                            <TableCell className="text-right whitespace-nowrap">${expense.amount.toFixed(2)}</TableCell>
                              <TableCell>
                                 <AlertDialog>
                                     <AlertDialogTrigger asChild>

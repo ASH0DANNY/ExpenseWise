@@ -49,7 +49,7 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { useToast } from "@/hooks/use-toast"
-import { PlusCircle, Trash2, Edit, Loader2 } from "lucide-react"
+import { PlusCircle, Trash2, Edit, Loader2, Building } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -62,6 +62,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import type { Vendor, Expense } from "@/types"; // Import types
+import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 
 const VENDORS_QUERY_KEY = "vendors";
 const EXPENSES_QUERY_KEY = "expenses"; // For checking usage
@@ -97,6 +98,7 @@ export default function VendorsPage() {
         } as Vendor));
         return vendorsData;
     },
+    staleTime: 1000 * 60 * 5, // Cache vendors for 5 minutes
   });
 
   // Mutation for adding a vendor
@@ -192,7 +194,13 @@ export default function VendorsPage() {
     },
     onSuccess: (deletedId) => {
         const deletedVendor = vendors.find(v => v.id === deletedId);
+        // Optimistic update: remove from cache immediately
+        queryClient.setQueryData<Vendor[]>([VENDORS_QUERY_KEY], (oldData) =>
+            oldData ? oldData.filter((v) => v.id !== deletedId) : []
+        );
+        // Invalidate to ensure consistency
         queryClient.invalidateQueries({ queryKey: [VENDORS_QUERY_KEY] });
+
         toast({
             title: "Vendor Deleted",
             description: `Vendor "${deletedVendor?.name || ''}" has been removed.`,
@@ -253,6 +261,9 @@ export default function VendorsPage() {
 
   function startEditing(id: string) {
     setEditingVendorId(id);
+     // Scroll to the form for better UX on mobile
+     const formCard = document.getElementById("vendor-form-card");
+     formCard?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function cancelEditing() {
@@ -267,7 +278,7 @@ export default function VendorsPage() {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       {/* Add/Edit Vendor Form Card */}
-      <div className="lg:col-span-1">
+      <div className="lg:col-span-1" id="vendor-form-card">
         <Card>
           <CardHeader>
             <CardTitle>{editingVendorId !== null ? "Edit Vendor" : "Add New Vendor"}</CardTitle>
@@ -329,15 +340,15 @@ export default function VendorsPage() {
                   )}
                 />
               </CardContent>
-              <CardFooter className="flex justify-between">
+              <CardFooter className="flex justify-between flex-wrap gap-2"> {/* Added flex-wrap and gap */}
                  {editingVendorId !== null && (
-                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading || updateVendorMutation.isPending}>
+                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading || updateVendorMutation.isPending} className="flex-grow sm:flex-grow-0"> {/* Flex grow for smaller screens */}
                      Cancel
                    </Button>
                  )}
                  <Button
                     type="submit"
-                    className={editingVendorId === null ? "w-full" : ""}
+                    className={editingVendorId === null ? "w-full sm:w-auto flex-grow sm:flex-grow-0" : "flex-grow sm:flex-grow-0"} // Full width on smallest, auto/grow otherwise
                     disabled={isLoading || addVendorMutation.isPending || updateVendorMutation.isPending}
                  >
                    {(addVendorMutation.isPending || updateVendorMutation.isPending) ? (
@@ -363,12 +374,15 @@ export default function VendorsPage() {
             <CardDescription>Manage your vendors and parties.</CardDescription>
           </CardHeader>
           <CardContent>
-             <div className="overflow-x-auto">
+             <div className="overflow-x-auto"> {/* Add horizontal scroll */}
              {isLoading ? (
-                 <div className="flex justify-center items-center p-4">
-                     <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                     <span className="ml-2 text-muted-foreground">Loading vendors...</span>
-                 </div>
+                  <div className="space-y-2">
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                  </div>
              ) : (
               <Table>
                 <TableHeader>
@@ -390,11 +404,11 @@ export default function VendorsPage() {
                     )}
                   {vendors.map((vendor) => (
                     <TableRow key={vendor.id} className={editingVendorId === vendor.id ? "bg-secondary" : ""}>
-                      <TableCell className="font-medium">{vendor.name}</TableCell>
-                      <TableCell>{vendor.contactPerson || "-"}</TableCell>
-                      <TableCell>{vendor.contactEmail || "-"}</TableCell>
-                      <TableCell>{vendor.contactPhone || "-"}</TableCell>
-                      <TableCell className="space-x-1">
+                      <TableCell className="font-medium whitespace-nowrap"><Building className="inline-block h-4 w-4 mr-1 text-muted-foreground" />{vendor.name}</TableCell>
+                      <TableCell className="whitespace-nowrap">{vendor.contactPerson || "-"}</TableCell>
+                      <TableCell className="whitespace-nowrap">{vendor.contactEmail || "-"}</TableCell>
+                      <TableCell className="whitespace-nowrap">{vendor.contactPhone || "-"}</TableCell>
+                      <TableCell className="space-x-1 whitespace-nowrap">
                          <Button
                            variant="ghost"
                            size="icon"

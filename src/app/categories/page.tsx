@@ -62,6 +62,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import type { Category, Expense } from "@/types"; // Import types
+import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 
 const CATEGORIES_QUERY_KEY = "categories";
 const EXPENSES_QUERY_KEY = "expenses"; // For checking usage
@@ -93,6 +94,7 @@ export default function CategoriesPage() {
           } as Category));
           return categoriesData;
       },
+      staleTime: 1000 * 60 * 5, // Cache categories for 5 minutes
   });
 
   // Mutation for adding a category
@@ -193,6 +195,10 @@ export default function CategoriesPage() {
     },
     onSuccess: (deletedId) => {
         const deletedCategory = categories.find(c => c.id === deletedId);
+        // Optimistic update
+        queryClient.setQueryData<Category[]>([CATEGORIES_QUERY_KEY], (oldData) =>
+          oldData ? oldData.filter((cat) => cat.id !== deletedId) : []
+        );
         queryClient.invalidateQueries({ queryKey: [CATEGORIES_QUERY_KEY] });
         toast({
             title: "Category Deleted",
@@ -246,6 +252,9 @@ export default function CategoriesPage() {
 
   function startEditing(id: string) {
     setEditingCategoryId(id);
+     // Scroll to the form for better UX on mobile
+     const formCard = document.getElementById("category-form-card");
+     formCard?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function cancelEditing() {
@@ -261,7 +270,7 @@ export default function CategoriesPage() {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       {/* Add/Edit Category Form Card */}
-      <div className="lg:col-span-1">
+      <div className="lg:col-span-1" id="category-form-card">
         <Card>
           <CardHeader>
             <CardTitle>{editingCategoryId !== null ? "Edit Category" : "Add New Category"}</CardTitle>
@@ -284,15 +293,15 @@ export default function CategoriesPage() {
                   )}
                 />
               </CardContent>
-              <CardFooter className="flex justify-between">
-                {editingCategoryId !== null && (
-                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading || updateCategoryMutation.isPending}>
+              <CardFooter className="flex justify-between flex-wrap gap-2"> {/* Added flex-wrap and gap */}
+                 {editingCategoryId !== null && (
+                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading || updateCategoryMutation.isPending} className="flex-grow sm:flex-grow-0"> {/* Flex grow for smaller screens */}
                      Cancel
                    </Button>
                  )}
                 <Button
                     type="submit"
-                    className={editingCategoryId === null ? "w-full" : ""}
+                    className={editingCategoryId === null ? "w-full sm:w-auto flex-grow sm:flex-grow-0" : "flex-grow sm:flex-grow-0"} // Full width on smallest, auto/grow otherwise
                     disabled={isLoading || addCategoryMutation.isPending || updateCategoryMutation.isPending}
                  >
                   {(addCategoryMutation.isPending || updateCategoryMutation.isPending) ? (
@@ -318,12 +327,15 @@ export default function CategoriesPage() {
             <CardDescription>Manage your expense categories.</CardDescription>
           </CardHeader>
           <CardContent>
-             <div className="overflow-x-auto">
+             <div className="overflow-x-auto"> {/* Add horizontal scroll */}
              {isLoading ? (
-                 <div className="flex justify-center items-center p-4">
-                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                    <span className="ml-2 text-muted-foreground">Loading categories...</span>
-                </div>
+                  <div className="space-y-2">
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                     <Skeleton className="h-10 w-full" />
+                  </div>
              ) : (
                 <Table>
                     <TableHeader>
@@ -342,10 +354,10 @@ export default function CategoriesPage() {
                         )}
                         {categories.map((category) => (
                         <TableRow key={category.id} className={editingCategoryId === category.id ? "bg-secondary" : ""}>
-                          <TableCell className="font-medium">
+                          <TableCell className="font-medium whitespace-nowrap">
                              <Badge variant="secondary"><Tag className="inline-block h-3 w-3 mr-1" />{category.name}</Badge>
                           </TableCell>
-                          <TableCell className="space-x-1">
+                          <TableCell className="space-x-1 whitespace-nowrap">
                              <Button
                                variant="ghost"
                                size="icon"

@@ -1,3 +1,4 @@
+
 "use client"
 
 import * as React from "react"
@@ -28,9 +29,28 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useIsMobile } from "@/hooks/use-mobile" // Import useIsMobile
+
+// Function to get page title from pathname
+const getPageTitle = (pathname: string): string => {
+    switch (pathname) {
+      case '/':
+        return 'Dashboard';
+      case '/expenses':
+        return 'Expenses';
+      case '/vendors':
+        return 'Vendors';
+      case '/categories':
+        return 'Categories';
+      default:
+        return 'ExpenseWise'; // Fallback title
+    }
+};
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const isMobile = useIsMobile(); // Check if the device is mobile
+  const pageTitle = getPageTitle(pathname);
 
   const isActive = (path: string) => pathname === path
 
@@ -40,7 +60,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         <SidebarHeader>
           <div className="flex items-center gap-2 p-2">
             <Wallet className="h-6 w-6 text-primary" />
-            <h1 className="text-lg font-semibold">ExpenseWise</h1>
+            <h1 className="text-lg font-semibold group-data-[collapsible=icon]:hidden">ExpenseWise</h1>
           </div>
         </SidebarHeader>
         <SidebarContent className="p-2">
@@ -86,16 +106,23 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                <AvatarFallback>EW</AvatarFallback>
              </Avatar>
              <span className="text-sm font-medium group-data-[collapsible=icon]:hidden">User Profile</span>
-            <Button variant="ghost" size="icon" className="ml-auto group-data-[collapsible=icon]:hidden">
+            {/* Hide settings button when collapsed for cleaner look */}
+            {/* <Button variant="ghost" size="icon" className="ml-auto group-data-[collapsible=icon]:hidden">
               <Settings className="h-4 w-4" />
-            </Button>
+            </Button> */}
           </div>
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="p-4 md:p-6">
         <div className="flex justify-between items-center mb-4 md:mb-6">
-           <SidebarTrigger className="md:hidden" />
-           {/* Can add breadcrumbs or page title here */}
+           {/* Show trigger only on mobile */}
+           {isMobile && <SidebarTrigger />}
+           {/* Display Page Title */}
+           <h2 className="text-xl md:text-2xl font-semibold text-foreground">{pageTitle}</h2>
+           {/* Placeholder for potential actions on the right */}
+           <div className="w-7 h-7"> {/* Keep layout consistent */}
+             {!isMobile && <SidebarTrigger />} {/* Show trigger on desktop */}
+           </div>
         </div>
         {children}
       </SidebarInset>

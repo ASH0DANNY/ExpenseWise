@@ -36,6 +36,7 @@ import {
   DialogClose,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label";
+import { useIsClient } from "@/hooks/use-is-client"; // Import useIsClient
 
 
 // Query Keys
@@ -59,6 +60,7 @@ export default function DashboardPage() {
   const { toast } = useToast();
   const [isIncomeDialogOpen, setIsIncomeDialogOpen] = React.useState(false);
   const [newIncome, setNewIncome] = React.useState<number | string>("");
+  const isClient = useIsClient(); // Hook to check if running on the client
 
   // Fetch Income Setting
   const { data: incomeSetting, isLoading: isLoadingIncome, error: errorIncome } = useQuery<IncomeSetting>({
@@ -95,6 +97,7 @@ export default function DashboardPage() {
   });
 
    // Fetch ALL Expenses for calculation (consider performance for very large datasets)
+   // Use enabled flag to prevent fetching on server render if causing hydration issues
    const { data: allExpenses = [], isLoading: isLoadingAllExpenses, error: errorAllExpenses } = useQuery<Expense[]>({
      queryKey: [EXPENSES_QUERY_KEY, 'all'], // Differentiate query key
      queryFn: async () => {
@@ -111,11 +114,13 @@ export default function DashboardPage() {
          } as Expense;
        });
      },
+     enabled: isClient, // Only fetch on the client to potentially avoid hydration mismatch
+     staleTime: 1000 * 60, // Stale after 1 minute
    });
 
 
   // Combined loading state for UI elements that depend on multiple queries
-  const isLoading = isLoadingIncome || isLoadingExpenses || isLoadingAllExpenses;
+  const isLoading = isLoadingIncome || isLoadingExpenses || (isLoadingAllExpenses && !isClient); // Adjust loading based on client status
   const loadError = errorIncome || errorExpenses || errorAllExpenses;
 
 
@@ -139,8 +144,11 @@ export default function DashboardPage() {
        return incomeAmount;
      },
      onSuccess: (updatedIncome) => {
+        // Invalidate queries to refetch data
         queryClient.invalidateQueries({ queryKey: [INCOME_SETTING_QUERY_KEY] });
+        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'all'] }); // Invalidate all expenses to recalculate summary
         queryClient.invalidateQueries({ queryKey: [DASHBOARD_SUMMARY_QUERY_KEY] }); // Invalidate summary if you have a separate query for it
+
         toast({
             title: "Income Updated",
             description: `Monthly income set to $${updatedIncome.toFixed(2)}.`,
@@ -180,6 +188,20 @@ export default function DashboardPage() {
    };
 
 
+  if (!isClient && isLoading) {
+      // Render skeletons or a loading indicator during SSR or initial client load
+      return (
+         <div className="space-y-6">
+            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
+                 <Skeleton className="h-24" />
+                 <Skeleton className="h-24" />
+                 <Skeleton className="h-24" />
+            </div>
+             <Skeleton className="h-[250px]" />
+         </div>
+      );
+  }
+
   if (loadError) {
     return <div className="text-destructive">Error loading dashboard data: {(loadError as Error).message}</div>;
   }
@@ -187,7 +209,8 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-3">
+      {/* Summary Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
         {/* Income Card */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -252,11 +275,11 @@ export default function DashboardPage() {
         {/* Expenses Card */}
          <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Expenses (This Month)</CardTitle>
+            <CardTitle className="text-sm font-medium">Total Expenses</CardTitle>
             <TrendingDown className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-             {isLoadingAllExpenses ? (
+             {isLoadingAllExpenses && !isClient ? ( // Show skeleton if loading on client or initial load
                <Skeleton className="h-8 w-3/4" />
              ) : (
                <div className="text-2xl font-bold text-destructive">${summaryData.expenses.toFixed(2)}</div>
@@ -271,7 +294,7 @@ export default function DashboardPage() {
             <Landmark className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-             {isLoading ? ( // Use combined loading state here as balance depends on both income and expenses
+             {isLoading && !isClient ? ( // Use combined loading state here
                <Skeleton className="h-8 w-3/4" />
              ) : (
                <div className={`text-2xl font-bold ${summaryData.balance >= 0 ? '' : 'text-destructive'}`}>
@@ -288,39 +311,46 @@ export default function DashboardPage() {
           <CardTitle>Recent Expenses</CardTitle>
         </CardHeader>
         <CardContent>
-           {isLoadingExpenses ? (
-             <div className="flex justify-center items-center p-4">
-                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                 <span className="ml-2 text-muted-foreground">Loading expenses...</span>
-            </div>
-           ) : recentExpenses.length === 0 ? (
-             <p className="text-center text-muted-foreground py-4">No recent expenses recorded.</p>
-           ) : (
-             <Table>
-               <TableHeader>
-                 <TableRow>
-                   <TableHead>Date</TableHead>
-                   <TableHead>Category</TableHead>
-                   <TableHead>Vendor</TableHead>
-                   <TableHead>Notes</TableHead>
-                   <TableHead className="text-right">Amount</TableHead>
-                 </TableRow>
-               </TableHeader>
-               <TableBody>
-                 {recentExpenses.map((expense) => (
-                   <TableRow key={expense.id}>
-                     <TableCell>{format(timestampToDate(expense.date), "yyyy-MM-dd")}</TableCell>
-                     <TableCell><Badge variant="secondary">{expense.category}</Badge></TableCell>
-                     <TableCell>{expense.vendor || "-"}</TableCell>
-                     <TableCell className="max-w-[150px] truncate" title={expense.notes ?? undefined}>
-                        {expense.notes || "-"}
-                     </TableCell>
-                     <TableCell className="text-right">${expense.amount.toFixed(2)}</TableCell>
+           <div className="overflow-x-auto"> {/* Add horizontal scroll for small screens */}
+             {isLoadingExpenses ? (
+              // Use multiple skeleton rows for better loading appearance
+              <div className="space-y-2">
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+              </div>
+
+             ) : recentExpenses.length === 0 ? (
+               <p className="text-center text-muted-foreground py-4">No recent expenses recorded.</p>
+             ) : (
+               <Table>
+                 <TableHeader>
+                   <TableRow>
+                     <TableHead>Date</TableHead>
+                     <TableHead>Category</TableHead>
+                     <TableHead>Vendor</TableHead>
+                     <TableHead>Notes</TableHead>
+                     <TableHead className="text-right">Amount</TableHead>
                    </TableRow>
-                 ))}
-               </TableBody>
-             </Table>
-           )}
+                 </TableHeader>
+                 <TableBody>
+                   {recentExpenses.map((expense) => (
+                     <TableRow key={expense.id}>
+                       <TableCell className="whitespace-nowrap">{format(timestampToDate(expense.date), "yyyy-MM-dd")}</TableCell>
+                       <TableCell><Badge variant="secondary">{expense.category}</Badge></TableCell>
+                       <TableCell className="whitespace-nowrap">{expense.vendor || "-"}</TableCell>
+                       <TableCell className="max-w-[150px] sm:max-w-[250px] truncate whitespace-normal break-words" title={expense.notes ?? undefined}>
+                          {expense.notes || "-"}
+                       </TableCell>
+                       <TableCell className="text-right whitespace-nowrap">${expense.amount.toFixed(2)}</TableCell>
+                     </TableRow>
+                   ))}
+                 </TableBody>
+               </Table>
+             )}
+           </div>
         </CardContent>
       </Card>
     </div>
