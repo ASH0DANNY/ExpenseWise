@@ -75,6 +75,7 @@ const mockExpenses = [
   { id: 6, date: new Date(2024, 6, 1), category: "Rent", vendor: "Landlord", amount: 1200.00 },
 ];
 
+const NO_VENDOR_VALUE = "__none__"; // Unique value for "None" option
 
 export default function ExpensesPage() {
   const [expenses, setExpenses] = React.useState(mockExpenses);
@@ -87,21 +88,27 @@ export default function ExpensesPage() {
     defaultValues: {
       amount: 0,
       category: "",
-      vendor: "",
+      vendor: "", // Empty string will show the placeholder
       notes: "",
       date: new Date(),
     },
   })
 
   function onSubmit(data: ExpenseFormValues) {
+    // Treat the unique "none" value as no vendor selected
+    const expenseData = {
+        ...data,
+        vendor: data.vendor === NO_VENDOR_VALUE ? undefined : data.vendor,
+    };
+
     const newExpense = {
         id: Math.max(0, ...expenses.map(e => e.id)) + 1, // Simple ID generation
-        ...data,
+        ...expenseData,
     };
     setExpenses(prevExpenses => [newExpense, ...prevExpenses]); // Add to the top
     toast({
       title: "Expense Added",
-      description: `Added ${data.category} expense of $${data.amount.toFixed(2)}.`,
+      description: `Added ${newExpense.category} expense of $${newExpense.amount.toFixed(2)}.`,
     })
     form.reset(); // Reset form after submission
   }
@@ -187,7 +194,7 @@ export default function ExpensesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Category</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <Select onValueChange={field.onChange} defaultValue={field.value} value={field.value || ""}>
                         <FormControl>
                           <SelectTrigger>
                             <SelectValue placeholder="Select a category" />
@@ -211,14 +218,16 @@ export default function ExpensesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Vendor (Optional)</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      {/* Use `value={field.value || ""}` to handle controlled component behavior with empty string default */}
+                      <Select onValueChange={field.onChange} value={field.value || ""}>
                          <FormControl>
                           <SelectTrigger>
                              <SelectValue placeholder="Select a vendor or leave blank" />
                           </SelectTrigger>
                          </FormControl>
                         <SelectContent>
-                           <SelectItem value="">None</SelectItem>
+                           {/* Use a unique, non-empty value for the "None" option */}
+                           <SelectItem value={NO_VENDOR_VALUE}>None</SelectItem>
                           {vendors.map((vendor) => (
                             <SelectItem key={vendor} value={vendor}>
                               {vendor}
@@ -286,7 +295,7 @@ export default function ExpensesPage() {
                         <TableCell>{format(expense.date, "yyyy-MM-dd")}</TableCell>
                         <TableCell><Badge variant="secondary">{expense.category}</Badge></TableCell>
                         <TableCell>{expense.vendor || "-"}</TableCell>
-                        <TableCell className="max-w-[150px] truncate" title={expense.notes}>{expense.notes || "-"}</TableCell>
+                        <TableCell className="max-w-[150px] truncate" title={expense.notes ?? undefined}>{expense.notes || "-"}</TableCell>
                         <TableCell className="text-right">${expense.amount.toFixed(2)}</TableCell>
                          <TableCell>
                            <Button
