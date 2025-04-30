@@ -1,3 +1,4 @@
+
 "use client"
 
 import * as React from "react"
@@ -51,7 +52,12 @@ import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 import { CalendarIcon, PlusCircle, Trash2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import type { Expense } from "@/types"; // Import the Expense type
 
+// Define localStorage keys
+const LOCAL_STORAGE_KEY_EXPENSES = 'expenseWiseApp_expenses';
+const LOCAL_STORAGE_KEY_CATEGORIES = 'expenseWiseApp_categories';
+const LOCAL_STORAGE_KEY_VENDORS = 'expenseWiseApp_vendors';
 
 const expenseFormSchema = z.object({
   date: z.date({ required_error: "Expense date is required." }),
@@ -63,10 +69,10 @@ const expenseFormSchema = z.object({
 
 type ExpenseFormValues = z.infer<typeof expenseFormSchema>
 
-// Mock data - replace with actual data fetching and state management
-const mockCategories = ["Groceries", "Utilities", "Dining Out", "Transport", "Entertainment", "Rent", "Other"]
-const mockVendors = ["SuperMart", "City Power", "Pizza Place", "Gas Station", "Cinema", "Landlord", "Online Store"]
-const mockExpenses = [
+// Mock data (fallback)
+const mockCategoriesData = ["Groceries", "Utilities", "Dining Out", "Transport", "Entertainment", "Rent", "Other"];
+const mockVendorsData = ["SuperMart", "City Power", "Pizza Place", "Gas Station", "Cinema", "Landlord", "Online Store"];
+const mockExpensesData: Expense[] = [
   { id: 1, date: new Date(2024, 6, 28), category: "Groceries", vendor: "SuperMart", amount: 75.50, notes: "Weekly shopping" },
   { id: 2, date: new Date(2024, 6, 27), category: "Utilities", vendor: "City Power", amount: 120.00, notes: "Electricity bill" },
   { id: 3, date: new Date(2024, 6, 26), category: "Dining Out", vendor: "Pizza Place", amount: 45.25 },
@@ -78,15 +84,121 @@ const mockExpenses = [
 const NO_VENDOR_VALUE = "__none__"; // Unique value for "None" option
 
 export default function ExpensesPage() {
-  const [expenses, setExpenses] = React.useState(mockExpenses);
-  const [categories, setCategories] = React.useState(mockCategories); // Replace with fetched data
-  const [vendors, setVendors] = React.useState(mockVendors); // Replace with fetched data
+    const [expenses, setExpenses] = React.useState<Expense[]>(() => {
+    if (typeof window !== 'undefined') {
+      const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
+      if (savedExpenses) {
+        try {
+          // Parse dates correctly from stored JSON strings
+          const parsedExpenses = JSON.parse(savedExpenses).map((exp: any) => ({
+            ...exp,
+            date: new Date(exp.date) // Convert date string back to Date object
+          }));
+          return parsedExpenses;
+        } catch (error) {
+          console.error("Error parsing expenses from local storage:", error);
+          return mockExpensesData; // Fallback to mock data on error
+        }
+      }
+    }
+    return mockExpensesData; // Default mock data if no saved data or SSR
+  });
+
+  const [categories, setCategories] = React.useState<string[]>(() => {
+     if (typeof window !== 'undefined') {
+       const saved = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
+       // Parse categories which are stored as full objects, extract names
+       if (saved) {
+           try {
+              const parsedCategories = JSON.parse(saved);
+              return parsedCategories.map((cat: { id: number, name: string }) => cat.name);
+           } catch (error) {
+              console.error("Error parsing categories from local storage:", error);
+              return mockCategoriesData;
+           }
+       }
+     }
+     return mockCategoriesData;
+  });
+
+  const [vendors, setVendors] = React.useState<string[]>(() => {
+     if (typeof window !== 'undefined') {
+       const saved = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
+       // Parse vendors which are stored as full objects, extract names
+       if (saved) {
+         try {
+            const parsedVendors = JSON.parse(saved);
+            return parsedVendors.map((ven: { id: number, name: string }) => ven.name);
+         } catch (error) {
+            console.error("Error parsing vendors from local storage:", error);
+            return mockVendorsData;
+         }
+       }
+     }
+     return mockVendorsData;
+  });
+
   const { toast } = useToast()
+
+  // Persist expenses to localStorage whenever they change
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LOCAL_STORAGE_KEY_EXPENSES, JSON.stringify(expenses));
+    }
+  }, [expenses]);
+
+  // Effect to update categories/vendors if they change in other pages (via localStorage)
+  React.useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === LOCAL_STORAGE_KEY_CATEGORIES && event.newValue) {
+        try {
+            const updatedCategories = JSON.parse(event.newValue);
+            setCategories(updatedCategories.map((cat: { id: number, name: string }) => cat.name));
+        } catch (error) {
+            console.error("Error parsing categories update from storage event:", error);
+        }
+      }
+      if (event.key === LOCAL_STORAGE_KEY_VENDORS && event.newValue) {
+         try {
+            const updatedVendors = JSON.parse(event.newValue);
+            setVendors(updatedVendors.map((ven: { id: number, name: string }) => ven.name));
+         } catch (error) {
+            console.error("Error parsing vendors update from storage event:", error);
+         }
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', handleStorageChange);
+      // Initial load check in case localStorage was updated while the page was inactive
+       const currentSavedCategories = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
+        if (currentSavedCategories) {
+            try {
+                 const parsedCategories = JSON.parse(currentSavedCategories);
+                 setCategories(parsedCategories.map((cat: { id: number, name: string }) => cat.name));
+            } catch {}
+        }
+        const currentSavedVendors = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
+        if (currentSavedVendors) {
+            try {
+                const parsedVendors = JSON.parse(currentSavedVendors);
+                setVendors(parsedVendors.map((ven: { id: number, name: string }) => ven.name));
+            } catch {}
+        }
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('storage', handleStorageChange);
+      }
+    };
+  }, []); // Empty dependency array means this runs once on mount and cleans up on unmount
+
 
   const form = useForm<ExpenseFormValues>({
     resolver: zodResolver(expenseFormSchema),
     defaultValues: {
-      amount: 0,
+      amount: undefined, // Use undefined for placeholder visibility
       category: "",
       vendor: "", // Empty string will show the placeholder
       notes: "",
@@ -101,8 +213,8 @@ export default function ExpensesPage() {
         vendor: data.vendor === NO_VENDOR_VALUE ? undefined : data.vendor,
     };
 
-    const newExpense = {
-        id: Math.max(0, ...expenses.map(e => e.id)) + 1, // Simple ID generation
+    const newExpense: Expense = {
+        id: (expenses.length > 0 ? Math.max(...expenses.map(e => e.id)) : 0) + 1, // More robust ID generation
         ...expenseData,
     };
     setExpenses(prevExpenses => [newExpense, ...prevExpenses]); // Add to the top
@@ -110,7 +222,13 @@ export default function ExpensesPage() {
       title: "Expense Added",
       description: `Added ${newExpense.category} expense of $${newExpense.amount.toFixed(2)}.`,
     })
-    form.reset(); // Reset form after submission
+    form.reset({
+        amount: undefined,
+        category: "",
+        vendor: "",
+        notes: "",
+        date: new Date(), // Reset date to today
+    }); // Reset form after submission
   }
 
   function deleteExpense(id: number) {
@@ -182,7 +300,8 @@ export default function ExpensesPage() {
                     <FormItem>
                       <FormLabel>Amount</FormLabel>
                       <FormControl>
-                        <Input type="number" placeholder="0.00" {...field} step="0.01" />
+                         {/* Set value to empty string if undefined to avoid React warning */}
+                         <Input type="number" placeholder="0.00" {...field} value={field.value ?? ""} step="0.01" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -194,7 +313,7 @@ export default function ExpensesPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Category</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value} value={field.value || ""}>
+                      <Select onValueChange={field.onChange} value={field.value || ""}>
                         <FormControl>
                           <SelectTrigger>
                             <SelectValue placeholder="Select a category" />
@@ -206,6 +325,8 @@ export default function ExpensesPage() {
                               {category}
                             </SelectItem>
                           ))}
+                           {/* Ensure a valid value if the list is empty */}
+                           {categories.length === 0 && <SelectItem value="-" disabled>No categories available</SelectItem>}
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -233,6 +354,8 @@ export default function ExpensesPage() {
                               {vendor}
                             </SelectItem>
                           ))}
+                           {/* Ensure a valid value if the list is empty */}
+                          {vendors.length === 0 && <SelectItem value="-" disabled>No vendors available</SelectItem>}
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -319,3 +442,5 @@ export default function ExpensesPage() {
     </div>
   )
 }
+
+    

@@ -1,3 +1,4 @@
+
 "use client"
 
 import * as React from "react"
@@ -45,7 +46,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import type { Vendor } from "@/types"; // Import the Vendor type
 
+// Define localStorage key
+const LOCAL_STORAGE_KEY_VENDORS = 'expenseWiseApp_vendors';
 
 const vendorFormSchema = z.object({
   name: z.string().min(1, { message: "Vendor name cannot be empty." }),
@@ -56,8 +60,8 @@ const vendorFormSchema = z.object({
 
 type VendorFormValues = z.infer<typeof vendorFormSchema>
 
-// Mock data - replace with actual state management
-const mockVendors = [
+// Mock data (fallback)
+const mockVendorsData: Vendor[] = [
   { id: 1, name: "SuperMart", contactPerson: "John Doe", contactEmail: "john.doe@supermart.com", contactPhone: "123-456-7890" },
   { id: 2, name: "City Power", contactPerson: "", contactEmail: "billing@citypower.com", contactPhone: "" },
   { id: 3, name: "Pizza Place", contactPerson: "Jane Smith", contactEmail: "", contactPhone: "987-654-3210" },
@@ -66,9 +70,30 @@ const mockVendors = [
 ];
 
 export default function VendorsPage() {
-  const [vendors, setVendors] = React.useState(mockVendors);
+  const [vendors, setVendors] = React.useState<Vendor[]>(() => {
+    if (typeof window !== 'undefined') {
+      const savedVendors = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
+      if (savedVendors) {
+        try {
+          return JSON.parse(savedVendors);
+        } catch (error) {
+          console.error("Error parsing vendors from local storage:", error);
+          return mockVendorsData; // Fallback to mock data on error
+        }
+      }
+    }
+    return mockVendorsData; // Default mock data if no saved data or SSR
+  });
+
   const [editingVendorId, setEditingVendorId] = React.useState<number | null>(null);
   const { toast } = useToast()
+
+  // Persist vendors to localStorage whenever they change
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LOCAL_STORAGE_KEY_VENDORS, JSON.stringify(vendors));
+    }
+  }, [vendors]);
 
   const form = useForm<VendorFormValues>({
     resolver: zodResolver(vendorFormSchema),
@@ -93,6 +118,12 @@ export default function VendorsPage() {
 
 
   function onSubmit(data: VendorFormValues) {
+     const existingVendor = vendors.find(v => v.name.toLowerCase() === data.name.toLowerCase() && v.id !== editingVendorId);
+     if (existingVendor && editingVendorId === null) { // Check only when adding new
+         form.setError("name", { type: "manual", message: "Vendor name already exists." });
+         return;
+     }
+
     if (editingVendorId !== null) {
       // Update existing vendor
       setVendors(prevVendors =>
@@ -107,8 +138,8 @@ export default function VendorsPage() {
       setEditingVendorId(null); // Exit editing mode
     } else {
       // Add new vendor
-      const newVendor = {
-        id: Math.max(0, ...vendors.map(v => v.id)) + 1, // Simple ID generation
+      const newVendor: Vendor = {
+        id: (vendors.length > 0 ? Math.max(...vendors.map(v => v.id)) : 0) + 1, // More robust ID generation
         ...data,
       };
       setVendors(prevVendors => [newVendor, ...prevVendors]);
@@ -123,6 +154,9 @@ export default function VendorsPage() {
   function deleteVendor(id: number) {
      const vendorToDelete = vendors.find(v => v.id === id);
      if (!vendorToDelete) return;
+
+     // Check if vendor is in use (optional - can be complex to check across expenses efficiently here)
+     // If needed, load expenses from localStorage and check `vendor` field.
 
      setVendors(prevVendors => prevVendors.filter(vendor => vendor.id !== id));
      toast({
@@ -263,6 +297,7 @@ export default function VendorsPage() {
                            size="icon"
                            onClick={() => startEditing(vendor.id)}
                            aria-label="Edit vendor"
+                           disabled={editingVendorId === vendor.id} // Disable edit button when editing this item
                          >
                            <Edit className="h-4 w-4" />
                          </Button>
@@ -273,6 +308,7 @@ export default function VendorsPage() {
                                size="icon"
                                className="text-destructive hover:text-destructive"
                                aria-label="Delete vendor"
+                               disabled={editingVendorId === vendor.id} // Disable delete button when editing this item
                               >
                                <Trash2 className="h-4 w-4" />
                              </Button>
@@ -286,7 +322,9 @@ export default function VendorsPage() {
                              </AlertDialogHeader>
                              <AlertDialogFooter>
                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                               <AlertDialogAction onClick={() => deleteVendor(vendor.id)}>
+                               <AlertDialogAction
+                                className={buttonVariants({ variant: "destructive" })} // Apply destructive style
+                                onClick={() => deleteVendor(vendor.id)}>
                                  Delete
                                </AlertDialogAction>
                              </AlertDialogFooter>
@@ -304,3 +342,8 @@ export default function VendorsPage() {
     </div>
   )
 }
+
+// Helper to get buttonVariants for AlertDialogAction
+import { buttonVariants } from "@/components/ui/button"
+
+    
