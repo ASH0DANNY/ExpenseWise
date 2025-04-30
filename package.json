@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev --turbopack -p 9002",
     "genkit:dev": "genkit start -- tsx src/ai/dev.ts",
+    "deploy": "next build && next export && touch out/.nojekyll && gh-pages -d out",
     "genkit:watch": "genkit start -- tsx --watch src/ai/dev.ts",
     "build": "next build",
     "start": "next start",
@@ -42,6 +43,7 @@
     "date-fns": "^3.6.0",
     "firebase": "^11.3.0",
     "genkit": "^1.0.4",
+    "gh-pages": "^6.3.0",
     "lucide-react": "^0.475.0",
     "next": "15.2.3",
     "patch-package": "^8.0.0",
