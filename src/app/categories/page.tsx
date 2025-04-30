@@ -5,6 +5,20 @@ import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { db } from "@/lib/firebase" // Import Firestore instance
+import {
+    collection,
+    addDoc,
+    getDocs,
+    doc,
+    updateDoc,
+    deleteDoc,
+    query,
+    where,
+    orderBy, // Import orderBy
+    limit // Import limit
+} from "firebase/firestore";
 
 import { Button, buttonVariants } from "@/components/ui/button"
 import {
@@ -48,11 +62,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import type { Category, Expense } from "@/types"; // Import types
-import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 
-// Define localStorage keys
-const LOCAL_STORAGE_KEY_CATEGORIES = 'expenseWiseApp_categories';
-const LOCAL_STORAGE_KEY_EXPENSES = 'expenseWiseApp_expenses'; // For checking usage
+const CATEGORIES_QUERY_KEY = "categories";
+const EXPENSES_QUERY_KEY = "expenses"; // For checking usage
 
 const categoryFormSchema = z.object({
   name: z.string().min(1, { message: "Category name cannot be empty." }),
@@ -60,169 +72,189 @@ const categoryFormSchema = z.object({
 
 type CategoryFormValues = z.infer<typeof categoryFormSchema>
 
-// Mock data (fallback)
-const mockCategoriesData: Category[] = [
-  { id: 1, name: "Groceries" },
-  { id: 2, name: "Utilities" },
-];
+// Firestore collection references
+const categoriesCollectionRef = collection(db, "categories");
+const expensesCollectionRef = collection(db, "expenses");
 
 export default function CategoriesPage() {
-  const [categories, setCategories] = React.useState<Category[]>([]);
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [editingCategoryId, setEditingCategoryId] = React.useState<number | null>(null);
-  const { toast } = useToast()
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [editingCategoryId, setEditingCategoryId] = React.useState<string | null>(null); // Use string for ID
 
-   // Load data from localStorage on client-side mount
-   React.useEffect(() => {
-    let loadedCategories: Category[] = [];
-    const savedCategories = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
-    if (savedCategories) {
-      try {
-        loadedCategories = JSON.parse(savedCategories);
-      } catch (error) {
-        console.error("Error parsing categories from local storage:", error);
-        // loadedCategories = mockCategoriesData; // Optional: fallback to mock
-      }
-    }
-    // Use mock if empty (optional)
-    if(loadedCategories.length === 0) {
-        // loadedCategories = mockCategoriesData;
-    }
+  // Fetch categories using React Query
+  const { data: categories = [], isLoading, error } = useQuery<Category[]>({
+      queryKey: [CATEGORIES_QUERY_KEY],
+      queryFn: async () => {
+          const q = query(categoriesCollectionRef, orderBy("name")); // Order by name
+          const querySnapshot = await getDocs(q);
+          const categoriesData = querySnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+          } as Category));
+          return categoriesData;
+      },
+  });
 
-    setCategories(loadedCategories);
-    setIsLoading(false);
-
-     // --- Add localStorage listener ---
-     const handleStorageChange = (event: StorageEvent) => {
-        if (event.key === LOCAL_STORAGE_KEY_CATEGORIES) {
-             let updatedCategories: Category[] = [];
-             if (event.newValue) {
-                 try { updatedCategories = JSON.parse(event.newValue); }
-                 catch (error) { console.error("Error parsing categories update:", error); }
-             }
-             setCategories(updatedCategories);
+  // Mutation for adding a category
+  const addCategoryMutation = useMutation({
+    mutationFn: async (newCategoryData: Omit<Category, 'id'>) => {
+      // Check if category name already exists (case-insensitive)
+      const existingQuery = query(categoriesCollectionRef, where("name", "==", newCategoryData.name)); // Case-sensitive Firestore query; handle case-insensitivity client-side if needed
+      const existingSnapshot = await getDocs(existingQuery);
+      if (!existingSnapshot.empty) {
+        // Firestore is case-sensitive, so we need a client-side check for case-insensitivity
+        const lowerCaseName = newCategoryData.name.toLowerCase();
+        const exists = categories.some(cat => cat.name.toLowerCase() === lowerCaseName);
+        if (exists) {
+            throw new Error("Category name already exists.");
         }
-    };
+      }
 
-      window.addEventListener('storage', handleStorageChange);
+      const docRef = await addDoc(categoriesCollectionRef, newCategoryData);
+      return { id: docRef.id, ...newCategoryData };
+    },
+    onSuccess: (newCategory) => {
+      queryClient.invalidateQueries({ queryKey: [CATEGORIES_QUERY_KEY] }); // Refetch categories
+      toast({
+        title: "Category Added",
+        description: `Category "${newCategory.name}" has been added.`,
+      });
+      form.reset();
+    },
+    onError: (error: Error) => {
+        if (error.message === "Category name already exists.") {
+             form.setError("name", { type: "manual", message: error.message });
+        } else {
+             toast({
+               title: "Error Adding Category",
+               description: error.message || "Could not add the category.",
+               variant: "destructive",
+             });
+        }
+    },
+  });
 
-      // --- Cleanup listener ---
-      return () => {
-        window.removeEventListener('storage', handleStorageChange);
-      };
-  }, []);
+  // Mutation for updating a category
+  const updateCategoryMutation = useMutation({
+     mutationFn: async ({ id, data }: { id: string; data: CategoryFormValues }) => {
+         // Check for existing name (case-insensitive) excluding the current category being edited
+         const lowerCaseName = data.name.toLowerCase();
+         const exists = categories.some(cat => cat.id !== id && cat.name.toLowerCase() === lowerCaseName);
+         if (exists) {
+             throw new Error("Category name already exists.");
+         }
 
-  // Persist categories to localStorage whenever they change
-  React.useEffect(() => {
-     // Only save if not loading to prevent overwriting initial state potentially
-    if (!isLoading) {
-        localStorage.setItem(LOCAL_STORAGE_KEY_CATEGORIES, JSON.stringify(categories));
-    }
-  }, [categories, isLoading]);
+         const categoryDocRef = doc(db, "categories", id);
+         await updateDoc(categoryDocRef, data); // Only update fields present in data (name)
+         return { id, ...data };
+     },
+     onSuccess: (updatedCategory) => {
+        queryClient.invalidateQueries({ queryKey: [CATEGORIES_QUERY_KEY] });
+        toast({
+            title: "Category Updated",
+            description: `Category "${updatedCategory.name}" has been updated.`,
+        });
+        setEditingCategoryId(null);
+        form.reset();
+     },
+     onError: (error: Error) => {
+         if (error.message === "Category name already exists.") {
+             form.setError("name", { type: "manual", message: error.message });
+         } else {
+             toast({
+                 title: "Error Updating Category",
+                 description: error.message || "Could not update the category.",
+                 variant: "destructive",
+             });
+         }
+     },
+  });
+
+  // Mutation for deleting a category
+  const deleteCategoryMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const categoryToDelete = categories.find(c => c.id === id);
+      if (!categoryToDelete) throw new Error("Category not found.");
+
+      // Check if category is in use by any expenses
+      const expensesQuery = query(
+          expensesCollectionRef,
+          where("category", "==", categoryToDelete.name),
+          limit(1) // We only need to know if at least one exists
+      );
+      const expensesSnapshot = await getDocs(expensesQuery);
+      if (!expensesSnapshot.empty) {
+        throw new Error(`Category "${categoryToDelete.name}" is currently assigned to one or more expenses.`);
+      }
+
+      const categoryDocRef = doc(db, "categories", id);
+      await deleteDoc(categoryDocRef);
+      return id; // Return the deleted ID for onSuccess
+    },
+    onSuccess: (deletedId) => {
+        const deletedCategory = categories.find(c => c.id === deletedId);
+        queryClient.invalidateQueries({ queryKey: [CATEGORIES_QUERY_KEY] });
+        toast({
+            title: "Category Deleted",
+            description: `Category "${deletedCategory?.name || ''}" has been removed.`,
+            variant: "destructive"
+        });
+        if (editingCategoryId === deletedId) {
+           setEditingCategoryId(null);
+           form.reset();
+        }
+    },
+    onError: (error: Error) => {
+        toast({
+            title: "Cannot Delete Category",
+            description: error.message || "Could not delete the category.",
+            variant: "destructive",
+        });
+    },
+  });
 
   const form = useForm<CategoryFormValues>({
     resolver: zodResolver(categoryFormSchema),
     defaultValues: {
       name: "",
     },
-  })
+  });
 
    React.useEffect(() => {
     if (editingCategoryId !== null) {
       const categoryToEdit = categories.find(c => c.id === editingCategoryId);
       if (categoryToEdit) {
-        form.reset({ name: categoryToEdit.name }); // Only reset name
+        form.reset({ name: categoryToEdit.name });
       }
     } else {
-      form.reset({ name: "" }); // Reset to default when not editing
+      form.reset({ name: "" });
     }
-  }, [editingCategoryId, categories, form]);
+   }, [editingCategoryId, categories, form]); // Dependencies: editingCategoryId, categories array, form instance
 
 
   function onSubmit(data: CategoryFormValues) {
-    const existingCategory = categories.find(c => c.name.toLowerCase() === data.name.toLowerCase() && c.id !== editingCategoryId);
-    if (existingCategory) {
-        form.setError("name", { type: "manual", message: "Category name already exists." });
-        return;
-    }
-
     if (editingCategoryId !== null) {
-      // Update existing category
-      const updatedCategories = categories.map(category =>
-          category.id === editingCategoryId ? { ...category, name: data.name } : category // Only update name
-      );
-      setCategories(updatedCategories);
-      toast({
-        title: "Category Updated",
-        description: `Category "${data.name}" has been updated.`,
-      });
-      setEditingCategoryId(null); // Exit editing mode
+      updateCategoryMutation.mutate({ id: editingCategoryId, data });
     } else {
-      // Add new category
-      const newCategory: Category = {
-        id: (categories.length > 0 ? Math.max(...categories.map(c => c.id)) : 0) + 1, // More robust ID generation
-        name: data.name,
-      };
-      const updatedCategories = [newCategory, ...categories];
-      setCategories(updatedCategories);
-      toast({
-        title: "Category Added",
-        description: `Category "${data.name}" has been added.`,
-      });
+      addCategoryMutation.mutate(data);
     }
-    form.reset(); // Reset form after submission or update
   }
 
-  function deleteCategory(id: number) {
-     const categoryToDelete = categories.find(c => c.id === id);
-     if (!categoryToDelete) return;
-
-     // Check if category is in use by fetching expenses from localStorage
-     let isCategoryInUse = false;
-     const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
-     if (savedExpenses) {
-       try {
-         const expensesData: Expense[] = JSON.parse(savedExpenses);
-         isCategoryInUse = expensesData.some((exp) => exp.category === categoryToDelete.name);
-       } catch (error) {
-         console.error("Error checking expense usage:", error);
-         // Handle error, maybe prevent deletion as a precaution
-         toast({ title: "Error checking usage", description: "Could not verify if category is in use.", variant: "destructive" });
-         return;
-       }
-     }
-
-     if (isCategoryInUse) {
-        toast({
-          title: "Cannot Delete Category",
-          description: `Category "${categoryToDelete.name}" is currently assigned to one or more expenses.`,
-          variant: "destructive",
-        });
-        return;
-     }
-
-
-     const updatedCategories = categories.filter(category => category.id !== id);
-     setCategories(updatedCategories);
-
-     toast({
-      title: "Category Deleted",
-      description: `Category "${categoryToDelete.name}" has been removed.`,
-      variant: "destructive"
-     })
-     if (editingCategoryId === id) {
-       setEditingCategoryId(null); // Cancel edit if deleting the category being edited
-       form.reset();
-     }
+  function deleteCategory(id: string) {
+    deleteCategoryMutation.mutate(id);
   }
 
-  function startEditing(id: number) {
+  function startEditing(id: string) {
     setEditingCategoryId(id);
   }
 
   function cancelEditing() {
     setEditingCategoryId(null);
     form.reset();
+  }
+
+  if (error) {
+      return <div className="text-destructive">Error loading categories: {(error as Error).message}</div>;
   }
 
 
@@ -245,7 +277,7 @@ export default function CategoriesPage() {
                     <FormItem>
                       <FormLabel>Category Name</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., Groceries, Utilities" {...field} disabled={isLoading}/>
+                        <Input placeholder="e.g., Groceries, Utilities" {...field} disabled={isLoading || addCategoryMutation.isPending || updateCategoryMutation.isPending}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -254,12 +286,22 @@ export default function CategoriesPage() {
               </CardContent>
               <CardFooter className="flex justify-between">
                 {editingCategoryId !== null && (
-                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading}>
+                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading || updateCategoryMutation.isPending}>
                      Cancel
                    </Button>
                  )}
-                <Button type="submit" className={editingCategoryId === null ? "w-full" : ""} disabled={isLoading}>
-                  {editingCategoryId !== null ? <Edit className="mr-2 h-4 w-4" /> : <PlusCircle className="mr-2 h-4 w-4" />}
+                <Button
+                    type="submit"
+                    className={editingCategoryId === null ? "w-full" : ""}
+                    disabled={isLoading || addCategoryMutation.isPending || updateCategoryMutation.isPending}
+                 >
+                  {(addCategoryMutation.isPending || updateCategoryMutation.isPending) ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : editingCategoryId !== null ? (
+                    <Edit className="mr-2 h-4 w-4" />
+                  ) : (
+                    <PlusCircle className="mr-2 h-4 w-4" />
+                  )}
                   {editingCategoryId !== null ? "Update Category" : "Add Category"}
                 </Button>
               </CardFooter>
@@ -291,7 +333,7 @@ export default function CategoriesPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {categories.length === 0 && (
+                        {categories.length === 0 && !isLoading && (
                            <TableRow>
                              <TableCell colSpan={2} className="text-center text-muted-foreground py-4">
                                No categories added yet.
@@ -309,7 +351,7 @@ export default function CategoriesPage() {
                                size="icon"
                                onClick={() => startEditing(category.id)}
                                aria-label="Edit category"
-                               disabled={editingCategoryId === category.id} // Disable edit button when editing this item
+                               disabled={editingCategoryId === category.id || deleteCategoryMutation.isPending} // Disable edit button when editing this item or deleting
                              >
                                <Edit className="h-4 w-4" />
                              </Button>
@@ -320,9 +362,13 @@ export default function CategoriesPage() {
                                     size="icon"
                                     className="text-destructive hover:text-destructive"
                                     aria-label="Delete category"
-                                    disabled={editingCategoryId === category.id} // Disable delete button when editing this item
+                                    disabled={editingCategoryId === category.id || deleteCategoryMutation.isPending && deleteCategoryMutation.variables === category.id} // Disable when editing this or deleting this
                                   >
-                                    <Trash2 className="h-4 w-4" />
+                                     {deleteCategoryMutation.isPending && deleteCategoryMutation.variables === category.id ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                     ) : (
+                                        <Trash2 className="h-4 w-4" />
+                                     )}
                                   </Button>
                                </AlertDialogTrigger>
                                <AlertDialogContent>
@@ -335,8 +381,13 @@ export default function CategoriesPage() {
                                  <AlertDialogFooter>
                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
                                    <AlertDialogAction
-                                    className={buttonVariants({ variant: "destructive" })} // Apply destructive style to delete action
-                                    onClick={() => deleteCategory(category.id)}>
+                                    className={buttonVariants({ variant: "destructive" })}
+                                    onClick={() => deleteCategory(category.id)}
+                                    disabled={deleteCategoryMutation.isPending}
+                                    >
+                                     {deleteCategoryMutation.isPending && deleteCategoryMutation.variables === category.id ? (
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                     ) : null}
                                      Delete
                                    </AlertDialogAction>
                                  </AlertDialogFooter>

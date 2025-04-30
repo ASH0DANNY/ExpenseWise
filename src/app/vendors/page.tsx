@@ -5,6 +5,21 @@ import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { db } from "@/lib/firebase" // Import Firestore instance
+import {
+    collection,
+    addDoc,
+    getDocs,
+    doc,
+    updateDoc,
+    deleteDoc,
+    query,
+    where,
+    orderBy, // Import orderBy
+    limit // Import limit
+} from "firebase/firestore";
+
 
 import { Button, buttonVariants } from "@/components/ui/button"
 import {
@@ -47,11 +62,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import type { Vendor, Expense } from "@/types"; // Import types
-import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 
-// Define localStorage key
-const LOCAL_STORAGE_KEY_VENDORS = 'expenseWiseApp_vendors';
-const LOCAL_STORAGE_KEY_EXPENSES = 'expenseWiseApp_expenses'; // For checking usage
+const VENDORS_QUERY_KEY = "vendors";
+const EXPENSES_QUERY_KEY = "expenses"; // For checking usage
 
 const vendorFormSchema = z.object({
   name: z.string().min(1, { message: "Vendor name cannot be empty." }),
@@ -62,65 +75,142 @@ const vendorFormSchema = z.object({
 
 type VendorFormValues = z.infer<typeof vendorFormSchema>
 
-// Mock data (fallback)
-const mockVendorsData: Vendor[] = [
-  { id: 1, name: "SuperMart", contactPerson: "John Doe", contactEmail: "john.doe@supermart.com", contactPhone: "123-456-7890" },
-  { id: 2, name: "City Power" },
-];
+// Firestore collection references
+const vendorsCollectionRef = collection(db, "vendors");
+const expensesCollectionRef = collection(db, "expenses");
+
 
 export default function VendorsPage() {
-  const [vendors, setVendors] = React.useState<Vendor[]>([]);
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [editingVendorId, setEditingVendorId] = React.useState<number | null>(null);
-  const { toast } = useToast()
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [editingVendorId, setEditingVendorId] = React.useState<string | null>(null); // Use string for ID
 
-  // Load data from localStorage on client-side mount
-  React.useEffect(() => {
-    let loadedVendors: Vendor[] = [];
-    const savedVendors = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
-    if (savedVendors) {
-      try {
-        loadedVendors = JSON.parse(savedVendors);
-      } catch (error) {
-        console.error("Error parsing vendors from local storage:", error);
-        // loadedVendors = mockVendorsData; // Optional: fallback to mock
-      }
-    }
-     // Use mock if empty (optional)
-    if(loadedVendors.length === 0) {
-        // loadedVendors = mockVendorsData;
-    }
+  // Fetch vendors using React Query
+  const { data: vendors = [], isLoading, error } = useQuery<Vendor[]>({
+    queryKey: [VENDORS_QUERY_KEY],
+    queryFn: async () => {
+        const q = query(vendorsCollectionRef, orderBy("name")); // Order by name
+        const querySnapshot = await getDocs(q);
+        const vendorsData = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+        } as Vendor));
+        return vendorsData;
+    },
+  });
 
-    setVendors(loadedVendors);
-    setIsLoading(false);
-
-     // --- Add localStorage listener ---
-     const handleStorageChange = (event: StorageEvent) => {
-        if (event.key === LOCAL_STORAGE_KEY_VENDORS) {
-             let updatedVendors: Vendor[] = [];
-             if (event.newValue) {
-                 try { updatedVendors = JSON.parse(event.newValue); }
-                 catch (error) { console.error("Error parsing vendors update:", error); }
-             }
-             setVendors(updatedVendors);
+  // Mutation for adding a vendor
+  const addVendorMutation = useMutation({
+    mutationFn: async (newVendorData: VendorFormValues) => {
+        // Check if vendor name already exists (case-insensitive check on client)
+        const lowerCaseName = newVendorData.name.toLowerCase();
+        const exists = vendors.some(v => v.name.toLowerCase() === lowerCaseName);
+        if (exists) {
+          throw new Error("Vendor name already exists.");
         }
-     };
 
-      window.addEventListener('storage', handleStorageChange);
+        const docRef = await addDoc(vendorsCollectionRef, newVendorData);
+        return { id: docRef.id, ...newVendorData };
+    },
+    onSuccess: (newVendor) => {
+        queryClient.invalidateQueries({ queryKey: [VENDORS_QUERY_KEY] });
+        toast({
+            title: "Vendor Added",
+            description: `Vendor "${newVendor.name}" has been added.`,
+        });
+        form.reset();
+    },
+    onError: (error: Error) => {
+        if (error.message === "Vendor name already exists.") {
+            form.setError("name", { type: "manual", message: error.message });
+        } else {
+            toast({
+                title: "Error Adding Vendor",
+                description: error.message || "Could not add the vendor.",
+                variant: "destructive",
+            });
+        }
+    },
+  });
 
-      // --- Cleanup listener ---
-      return () => {
-        window.removeEventListener('storage', handleStorageChange);
-      };
-  }, []);
+  // Mutation for updating a vendor
+  const updateVendorMutation = useMutation({
+     mutationFn: async ({ id, data }: { id: string; data: VendorFormValues }) => {
+         // Check for existing name (case-insensitive) excluding the current vendor
+         const lowerCaseName = data.name.toLowerCase();
+         const exists = vendors.some(v => v.id !== id && v.name.toLowerCase() === lowerCaseName);
+         if (exists) {
+             throw new Error("Vendor name already exists.");
+         }
 
-  // Persist vendors to localStorage whenever they change
-  React.useEffect(() => {
-     // Only save if not loading to prevent overwriting initial state potentially
-    if (!isLoading) {
-        localStorage.setItem(LOCAL_STORAGE_KEY_VENDORS, JSON.stringify(vendors));
-    }
-  }, [vendors, isLoading]);
+         const vendorDocRef = doc(db, "vendors", id);
+         await updateDoc(vendorDocRef, data);
+         return { id, ...data };
+     },
+     onSuccess: (updatedVendor) => {
+         queryClient.invalidateQueries({ queryKey: [VENDORS_QUERY_KEY] });
+         toast({
+             title: "Vendor Updated",
+             description: `Vendor "${updatedVendor.name}" has been updated.`,
+         });
+         setEditingVendorId(null);
+         form.reset();
+     },
+     onError: (error: Error) => {
+         if (error.message === "Vendor name already exists.") {
+             form.setError("name", { type: "manual", message: error.message });
+         } else {
+             toast({
+                 title: "Error Updating Vendor",
+                 description: error.message || "Could not update the vendor.",
+                 variant: "destructive",
+             });
+         }
+     },
+  });
+
+  // Mutation for deleting a vendor
+  const deleteVendorMutation = useMutation({
+    mutationFn: async (id: string) => {
+        const vendorToDelete = vendors.find(v => v.id === id);
+        if (!vendorToDelete) throw new Error("Vendor not found.");
+
+        // Check if vendor is in use by any expenses
+        const expensesQuery = query(
+            expensesCollectionRef,
+            where("vendor", "==", vendorToDelete.name),
+            limit(1) // We only need to know if at least one exists
+        );
+        const expensesSnapshot = await getDocs(expensesQuery);
+        if (!expensesSnapshot.empty) {
+            throw new Error(`Vendor "${vendorToDelete.name}" is currently assigned to one or more expenses.`);
+        }
+
+        const vendorDocRef = doc(db, "vendors", id);
+        await deleteDoc(vendorDocRef);
+        return id; // Return the deleted ID
+    },
+    onSuccess: (deletedId) => {
+        const deletedVendor = vendors.find(v => v.id === deletedId);
+        queryClient.invalidateQueries({ queryKey: [VENDORS_QUERY_KEY] });
+        toast({
+            title: "Vendor Deleted",
+            description: `Vendor "${deletedVendor?.name || ''}" has been removed.`,
+            variant: "destructive"
+        });
+        if (editingVendorId === deletedId) {
+            setEditingVendorId(null);
+            form.reset();
+        }
+    },
+    onError: (error: Error) => {
+        toast({
+            title: "Cannot Delete Vendor",
+            description: error.message || "Could not delete the vendor.",
+            variant: "destructive",
+        });
+    },
+  });
 
   const form = useForm<VendorFormValues>({
     resolver: zodResolver(vendorFormSchema),
@@ -136,92 +226,32 @@ export default function VendorsPage() {
     if (editingVendorId !== null) {
       const vendorToEdit = vendors.find(v => v.id === editingVendorId);
       if (vendorToEdit) {
-        form.reset(vendorToEdit);
+        form.reset({
+            name: vendorToEdit.name,
+            contactPerson: vendorToEdit.contactPerson || "",
+            contactEmail: vendorToEdit.contactEmail || "",
+            contactPhone: vendorToEdit.contactPhone || "",
+        });
       }
     } else {
-      form.reset({ name: "", contactPerson: "", contactEmail: "", contactPhone: "" }); // Reset to default when not editing
+      form.reset({ name: "", contactPerson: "", contactEmail: "", contactPhone: "" });
     }
   }, [editingVendorId, vendors, form]);
 
 
   function onSubmit(data: VendorFormValues) {
-     const existingVendor = vendors.find(v => v.name.toLowerCase() === data.name.toLowerCase() && v.id !== editingVendorId);
-     // Check for existing name only when adding a new vendor or when editing and the name has changed
-     if (existingVendor && (editingVendorId === null || vendors.find(v => v.id === editingVendorId)?.name.toLowerCase() !== data.name.toLowerCase())) {
-         form.setError("name", { type: "manual", message: "Vendor name already exists." });
-         return;
-     }
-
     if (editingVendorId !== null) {
-      // Update existing vendor
-      const updatedVendors = vendors.map(vendor =>
-          vendor.id === editingVendorId ? { ...vendor, ...data } : vendor
-        );
-      setVendors(updatedVendors);
-      toast({
-        title: "Vendor Updated",
-        description: `Vendor "${data.name}" has been updated.`,
-      });
-      setEditingVendorId(null); // Exit editing mode
+      updateVendorMutation.mutate({ id: editingVendorId, data });
     } else {
-      // Add new vendor
-      const newVendor: Vendor = {
-        id: (vendors.length > 0 ? Math.max(...vendors.map(v => v.id)) : 0) + 1, // More robust ID generation
-        ...data,
-      };
-      const updatedVendors = [newVendor, ...vendors];
-      setVendors(updatedVendors);
-      toast({
-        title: "Vendor Added",
-        description: `Vendor "${data.name}" has been added.`,
-      });
+      addVendorMutation.mutate(data);
     }
-    form.reset(); // Reset form after submission or update
   }
 
-  function deleteVendor(id: number) {
-     const vendorToDelete = vendors.find(v => v.id === id);
-     if (!vendorToDelete) return;
-
-     // Check if vendor is in use by fetching expenses from localStorage
-      let isVendorInUse = false;
-      const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
-      if (savedExpenses) {
-          try {
-              const expensesData: Expense[] = JSON.parse(savedExpenses);
-              isVendorInUse = expensesData.some((exp) => exp.vendor === vendorToDelete.name);
-          } catch (error) {
-              console.error("Error checking expense usage:", error);
-              toast({ title: "Error checking usage", description: "Could not verify if vendor is in use.", variant: "destructive" });
-              return;
-          }
-      }
-
-      if (isVendorInUse) {
-          toast({
-              title: "Cannot Delete Vendor",
-              description: `Vendor "${vendorToDelete.name}" is currently assigned to one or more expenses.`,
-              variant: "destructive",
-          });
-          return;
-      }
-
-
-     const updatedVendors = vendors.filter(vendor => vendor.id !== id);
-     setVendors(updatedVendors);
-
-     toast({
-      title: "Vendor Deleted",
-      description: `Vendor "${vendorToDelete.name}" has been removed.`,
-      variant: "destructive"
-     })
-     if (editingVendorId === id) {
-       setEditingVendorId(null); // Cancel edit if deleting the vendor being edited
-       form.reset();
-     }
+  function deleteVendor(id: string) {
+     deleteVendorMutation.mutate(id);
   }
 
-  function startEditing(id: number) {
+  function startEditing(id: string) {
     setEditingVendorId(id);
   }
 
@@ -229,6 +259,10 @@ export default function VendorsPage() {
     setEditingVendorId(null);
     form.reset();
   }
+
+   if (error) {
+      return <div className="text-destructive">Error loading vendors: {(error as Error).message}</div>;
+   }
 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
@@ -249,7 +283,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Vendor Name</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., SuperMart, Landlord" {...field} disabled={isLoading}/>
+                        <Input placeholder="e.g., SuperMart, Landlord" {...field} disabled={isLoading || addVendorMutation.isPending || updateVendorMutation.isPending}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -262,7 +296,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Contact Person (Optional)</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., John Doe" {...field} disabled={isLoading}/>
+                        <Input placeholder="e.g., John Doe" {...field} disabled={isLoading || addVendorMutation.isPending || updateVendorMutation.isPending}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -275,7 +309,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Contact Email (Optional)</FormLabel>
                       <FormControl>
-                        <Input type="email" placeholder="e.g., contact@example.com" {...field} disabled={isLoading}/>
+                        <Input type="email" placeholder="e.g., contact@example.com" {...field} disabled={isLoading || addVendorMutation.isPending || updateVendorMutation.isPending}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -288,7 +322,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Contact Phone (Optional)</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., 123-456-7890" {...field} disabled={isLoading}/>
+                        <Input placeholder="e.g., 123-456-7890" {...field} disabled={isLoading || addVendorMutation.isPending || updateVendorMutation.isPending}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -297,12 +331,22 @@ export default function VendorsPage() {
               </CardContent>
               <CardFooter className="flex justify-between">
                  {editingVendorId !== null && (
-                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading}>
+                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading || updateVendorMutation.isPending}>
                      Cancel
                    </Button>
                  )}
-                <Button type="submit" className={editingVendorId === null ? "w-full" : ""} disabled={isLoading}>
-                  {editingVendorId !== null ? <Edit className="mr-2 h-4 w-4" /> : <PlusCircle className="mr-2 h-4 w-4" />}
+                 <Button
+                    type="submit"
+                    className={editingVendorId === null ? "w-full" : ""}
+                    disabled={isLoading || addVendorMutation.isPending || updateVendorMutation.isPending}
+                 >
+                   {(addVendorMutation.isPending || updateVendorMutation.isPending) ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : editingVendorId !== null ? (
+                    <Edit className="mr-2 h-4 w-4" />
+                  ) : (
+                    <PlusCircle className="mr-2 h-4 w-4" />
+                  )}
                   {editingVendorId !== null ? "Update Vendor" : "Add Vendor"}
                 </Button>
               </CardFooter>
@@ -337,7 +381,7 @@ export default function VendorsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                   {vendors.length === 0 && (
+                   {vendors.length === 0 && !isLoading && (
                        <TableRow>
                          <TableCell colSpan={5} className="text-center text-muted-foreground py-4">
                            No vendors added yet.
@@ -356,7 +400,7 @@ export default function VendorsPage() {
                            size="icon"
                            onClick={() => startEditing(vendor.id)}
                            aria-label="Edit vendor"
-                           disabled={editingVendorId === vendor.id} // Disable edit button when editing this item
+                           disabled={editingVendorId === vendor.id || deleteVendorMutation.isPending} // Disable when editing this or deleting
                          >
                            <Edit className="h-4 w-4" />
                          </Button>
@@ -367,9 +411,13 @@ export default function VendorsPage() {
                                size="icon"
                                className="text-destructive hover:text-destructive"
                                aria-label="Delete vendor"
-                               disabled={editingVendorId === vendor.id} // Disable delete button when editing this item
+                               disabled={editingVendorId === vendor.id || deleteVendorMutation.isPending && deleteVendorMutation.variables === vendor.id} // Disable when editing this or deleting this
                               >
-                               <Trash2 className="h-4 w-4" />
+                                {deleteVendorMutation.isPending && deleteVendorMutation.variables === vendor.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                 ) : (
+                                    <Trash2 className="h-4 w-4" />
+                                 )}
                              </Button>
                            </AlertDialogTrigger>
                            <AlertDialogContent>
@@ -383,7 +431,11 @@ export default function VendorsPage() {
                                <AlertDialogCancel>Cancel</AlertDialogCancel>
                                <AlertDialogAction
                                 className={buttonVariants({ variant: "destructive" })} // Apply destructive style
-                                onClick={() => deleteVendor(vendor.id)}>
+                                onClick={() => deleteVendor(vendor.id)}
+                                disabled={deleteVendorMutation.isPending}>
+                                 {deleteVendorMutation.isPending && deleteVendorMutation.variables === vendor.id ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                 ) : null}
                                  Delete
                                </AlertDialogAction>
                              </AlertDialogFooter>
