@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { format } from "date-fns"
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query"
 import { db } from "@/lib/firebase" // Import Firestore instance
 import {
     collection,
@@ -16,7 +16,13 @@ import {
     deleteDoc,
     query,
     orderBy,
-    Timestamp // Import Timestamp
+    Timestamp, // Import Timestamp
+    limit,
+    startAfter,
+    getDoc,
+    writeBatch,
+    updateDoc,
+    increment // Import increment
 } from "firebase/firestore";
 
 import { Button, buttonVariants } from "@/components/ui/button"
@@ -64,7 +70,7 @@ import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 import { CalendarIcon, PlusCircle, Trash2, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import type { Expense, Category, Vendor } from "@/types"; // Import types
+import type { Expense, Category, Vendor, SummaryData } from "@/types"; // Import types
 import {
     AlertDialog,
     AlertDialogAction,
@@ -77,16 +83,24 @@ import {
     AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
+import { useInView } from 'react-intersection-observer'; // For infinite scrolling
+
 
 // Query Keys
 const EXPENSES_QUERY_KEY = "expenses";
 const CATEGORIES_QUERY_KEY = "categories";
 const VENDORS_QUERY_KEY = "vendors";
+const SUMMARY_DATA_QUERY_KEY = "summaryData"; // For updating summary
+const SUMMARY_DOC_ID = "globalSummary"; // Fixed ID for the summary document
 
 // Firestore collection references
 const expensesCollectionRef = collection(db, "expenses");
 const categoriesCollectionRef = collection(db, "categories");
 const vendorsCollectionRef = collection(db, "vendors");
+const settingsCollectionRef = collection(db, "settings");
+
+// Pagination Limit
+const EXPENSES_PER_PAGE = 15;
 
 // Zod schema for form validation
 const expenseFormSchema = z.object({
@@ -101,30 +115,56 @@ type ExpenseFormValues = z.infer<typeof expenseFormSchema>
 
 // Helper to convert Firebase Timestamp to Date
 const timestampToDate = (timestamp: Timestamp | Date): Date => {
+     if (!timestamp) return new Date(); // Handle null/undefined case
     return timestamp instanceof Timestamp ? timestamp.toDate() : timestamp;
 };
 
 export default function ExpensesPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { ref: loadMoreRef, inView } = useInView(); // Hook for detecting when "Load More" is visible
 
-  // Fetch Expenses
-  const { data: expenses = [], isLoading: isLoadingExpenses, error: errorExpenses } = useQuery<Expense[]>({
-    queryKey: [EXPENSES_QUERY_KEY],
-    queryFn: async () => {
-        const q = query(expensesCollectionRef, orderBy("date", "desc"));
-        const querySnapshot = await getDocs(q);
-        const expensesData = querySnapshot.docs.map(doc => {
-           const data = doc.data();
-           return {
-                id: doc.id,
-                ...data,
-                date: timestampToDate(data.date) // Convert Timestamp to Date
-            } as Expense;
-        });
-        return expensesData;
-    },
+  // Fetch Expenses with Infinite Scrolling / Pagination
+   const {
+      data: expensesPages,
+      fetchNextPage,
+      hasNextPage,
+      isLoading: isLoadingExpenses,
+      isFetchingNextPage,
+      error: errorExpenses,
+    } = useInfiniteQuery<{ expenses: Expense[], lastVisible: any | null }, Error>({
+        queryKey: [EXPENSES_QUERY_KEY],
+        queryFn: async ({ pageParam = null }) => {
+             const expensesQuery = pageParam
+               ? query(expensesCollectionRef, orderBy("date", "desc"), startAfter(pageParam), limit(EXPENSES_PER_PAGE))
+               : query(expensesCollectionRef, orderBy("date", "desc"), limit(EXPENSES_PER_PAGE));
+
+            const querySnapshot = await getDocs(expensesQuery);
+            const expensesData = querySnapshot.docs.map(doc => {
+               const data = doc.data();
+               return {
+                    id: doc.id,
+                    ...data,
+                    date: timestampToDate(data.date) // Convert Timestamp to Date
+                } as Expense;
+            });
+            const lastVisible = querySnapshot.docs[querySnapshot.docs.length - 1] || null;
+            return { expenses: expensesData, lastVisible };
+        },
+        getNextPageParam: (lastPage) => lastPage.lastVisible, // Use the last document as the cursor for the next page
+        initialPageParam: null, // Add this line
    });
+
+   // Flatten the pages into a single array of expenses
+   const expenses = React.useMemo(() => expensesPages?.pages.flatMap(page => page.expenses) ?? [], [expensesPages]);
+
+   // Trigger fetching the next page when the loadMoreRef element comes into view
+   React.useEffect(() => {
+     if (inView && hasNextPage && !isFetchingNextPage) {
+       fetchNextPage();
+     }
+   }, [inView, hasNextPage, fetchNextPage, isFetchingNextPage]);
+
 
   // Fetch Categories
    const { data: categories = [], isLoading: isLoadingCategories, error: errorCategories } = useQuery<Category[]>({
@@ -134,7 +174,7 @@ export default function ExpensesPage() {
        const querySnapshot = await getDocs(q);
        return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
      },
-     staleTime: 1000 * 60 * 5, // Cache categories for 5 minutes
+     staleTime: 1000 * 60 * 15, // Cache categories for 15 minutes
    });
 
    // Fetch Vendors
@@ -145,29 +185,46 @@ export default function ExpensesPage() {
        const querySnapshot = await getDocs(q);
        return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Vendor));
      },
-     staleTime: 1000 * 60 * 5, // Cache vendors for 5 minutes
+     staleTime: 1000 * 60 * 15, // Cache vendors for 15 minutes
    });
 
-  // Combined loading state
-  const isLoading = isLoadingExpenses || isLoadingCategories || isLoadingVendors;
+  // Combined loading state for initial load (excluding pagination fetching)
+  const isInitiallyLoading = isLoadingExpenses && !expensesPages?.pages.length;
   const loadError = errorExpenses || errorCategories || errorVendors;
 
   // Mutation for adding an expense
   const addExpenseMutation = useMutation({
-    mutationFn: async (newExpenseData: ExpenseFormValues) => {
+     mutationFn: async (newExpenseData: ExpenseFormValues) => {
         const dataToSave = {
           ...newExpenseData,
           date: Timestamp.fromDate(newExpenseData.date), // Convert Date to Firestore Timestamp
           vendor: newExpenseData.vendor === "__none__" ? null : newExpenseData.vendor, // Handle "None" vendor
         };
-        const docRef = await addDoc(expensesCollectionRef, dataToSave);
-        return { id: docRef.id, ...newExpenseData }; // Return original data with new ID for UI feedback
+
+        // Use a batch write to add expense and update summary atomically
+        const batch = writeBatch(db);
+        const expenseDocRef = doc(collection(db, "expenses")); // Create a ref without adding yet
+        batch.set(expenseDocRef, dataToSave);
+
+        // Update summary document
+        const summaryDocRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
+        batch.update(summaryDocRef, {
+            totalExpenses: increment(newExpenseData.amount),
+            expenseCount: increment(1)
+        });
+
+        await batch.commit(); // Commit the batch
+
+        return { id: expenseDocRef.id, ...newExpenseData }; // Return original data with new ID for UI feedback
     },
     onSuccess: (newExpense) => {
-        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY] });
-        queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] }); // Invalidate dashboard summary too
-        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'all'] }); // Invalidate all expenses on dashboard
-        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'recent'] }); // Invalidate recent expenses on dashboard
+        // Invalidate the first page of expenses to show the new one at the top
+        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY], exact: true });
+        // Invalidate summary data
+        queryClient.invalidateQueries({ queryKey: [SUMMARY_DATA_QUERY_KEY] });
+        // Invalidate recent expenses on dashboard if needed
+        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'recent'] });
+
         toast({
           title: "Expense Added",
           description: `Added ${newExpense.category} expense of $${newExpense.amount.toFixed(2)}.`,
@@ -191,28 +248,43 @@ export default function ExpensesPage() {
 
   // Mutation for deleting an expense
    const deleteExpenseMutation = useMutation({
-     mutationFn: async (id: string) => {
-       const expenseDocRef = doc(db, "expenses", id);
-       await deleteDoc(expenseDocRef);
-       return id; // Return deleted ID for UI feedback
-     },
-     onSuccess: (deletedId) => {
-        // Update the local cache immediately for faster UI feedback
-        queryClient.setQueryData<Expense[]>([EXPENSES_QUERY_KEY], (oldData) =>
-            oldData ? oldData.filter((exp) => exp.id !== deletedId) : []
-        );
-        queryClient.setQueryData<Expense[]>([EXPENSES_QUERY_KEY, 'recent'], (oldData) =>
-            oldData ? oldData.filter((exp) => exp.id !== deletedId) : []
-        );
-         queryClient.setQueryData<Expense[]>([EXPENSES_QUERY_KEY, 'all'], (oldData) =>
-             oldData ? oldData.filter((exp) => exp.id !== deletedId) : []
-         );
+     mutationFn: async ({ id, amount }: { id: string, amount: number }) => {
+       // Use a batch write to delete expense and update summary atomically
+        const batch = writeBatch(db);
+        const expenseDocRef = doc(db, "expenses", id);
+        batch.delete(expenseDocRef);
 
-        // Invalidate queries to ensure consistency with the backend
+        // Update summary document
+        const summaryDocRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
+        batch.update(summaryDocRef, {
+            totalExpenses: increment(-amount), // Decrement total expenses
+            expenseCount: increment(-1)     // Decrement count
+        });
+
+        await batch.commit();
+        return { id, amount }; // Return deleted ID and amount for UI feedback/cache update
+     },
+     onSuccess: ({ id: deletedId }) => {
+        // Optimistically update the cache
+        queryClient.setQueryData<{ pages: { expenses: Expense[], lastVisible: any }[] } | undefined>(
+          [EXPENSES_QUERY_KEY],
+          (oldData) => {
+            if (!oldData) return oldData;
+            return {
+              ...oldData,
+              pages: oldData.pages.map(page => ({
+                ...page,
+                expenses: page.expenses.filter(exp => exp.id !== deletedId),
+              })),
+            };
+          }
+        );
+
+        // Invalidate queries to ensure eventual consistency
         queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY] });
-        queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] }); // Invalidate dashboard summary too
-        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'all'] });
+        queryClient.invalidateQueries({ queryKey: [SUMMARY_DATA_QUERY_KEY] });
         queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'recent'] });
+
 
         toast({
          title: "Expense Deleted",
@@ -245,8 +317,8 @@ export default function ExpensesPage() {
     addExpenseMutation.mutate(data);
   }
 
-  function deleteExpense(id: string) {
-     deleteExpenseMutation.mutate(id);
+  function deleteExpense(id: string, amount: number) {
+     deleteExpenseMutation.mutate({ id, amount });
   }
 
   if (loadError) {
@@ -388,7 +460,7 @@ export default function ExpensesPage() {
                     <FormItem>
                       <FormLabel>Notes (Optional)</FormLabel>
                       <FormControl>
-                        <Textarea placeholder="Add any relevant notes..." {...field} disabled={addExpenseMutation.isPending}/>
+                        <Textarea placeholder="Add any relevant notes..." {...field} value={field.value ?? ""} disabled={addExpenseMutation.isPending}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -396,7 +468,7 @@ export default function ExpensesPage() {
                 />
               </CardContent>
               <CardFooter>
-                <Button type="submit" className="w-full" disabled={isLoading || addExpenseMutation.isPending}>
+                <Button type="submit" className="w-full" disabled={isLoadingCategories || isLoadingVendors || addExpenseMutation.isPending}>
                    {addExpenseMutation.isPending ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                    ) : (
@@ -419,14 +491,11 @@ export default function ExpensesPage() {
           </CardHeader>
           <CardContent>
              <div className="overflow-x-auto"> {/* Add horizontal scroll for small screens */}
-                {isLoadingExpenses ? (
+                {isInitiallyLoading ? (
                      <div className="space-y-2">
-                        <Skeleton className="h-10 w-full" />
-                        <Skeleton className="h-10 w-full" />
-                        <Skeleton className="h-10 w-full" />
-                        <Skeleton className="h-10 w-full" />
-                        <Skeleton className="h-10 w-full" />
-                        <Skeleton className="h-10 w-full" />
+                        {[...Array(EXPENSES_PER_PAGE)].map((_, i) => (
+                          <Skeleton key={i} className="h-10 w-full rounded" />
+                        ))}
                      </div>
                 ) : (
                     <Table>
@@ -441,7 +510,7 @@ export default function ExpensesPage() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {expenses.length === 0 && !isLoadingExpenses && (
+                        {expenses.length === 0 && !isInitiallyLoading && (
                            <TableRow>
                              <TableCell colSpan={6} className="text-center text-muted-foreground py-4">
                                No expenses recorded yet.
@@ -465,9 +534,9 @@ export default function ExpensesPage() {
                                             size="icon"
                                             className="text-destructive hover:text-destructive"
                                             aria-label="Delete expense"
-                                            disabled={deleteExpenseMutation.isPending && deleteExpenseMutation.variables === expense.id}
+                                            disabled={deleteExpenseMutation.isPending && deleteExpenseMutation.variables?.id === expense.id}
                                         >
-                                          {deleteExpenseMutation.isPending && deleteExpenseMutation.variables === expense.id ? (
+                                          {deleteExpenseMutation.isPending && deleteExpenseMutation.variables?.id === expense.id ? (
                                              <Loader2 className="h-4 w-4 animate-spin" />
                                           ) : (
                                              <Trash2 className="h-4 w-4" />
@@ -485,9 +554,9 @@ export default function ExpensesPage() {
                                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                                         <AlertDialogAction
                                             className={buttonVariants({ variant: "destructive" })}
-                                            onClick={() => deleteExpense(expense.id)}
+                                            onClick={() => deleteExpense(expense.id, expense.amount)}
                                             disabled={deleteExpenseMutation.isPending}>
-                                             {deleteExpenseMutation.isPending && deleteExpenseMutation.variables === expense.id ? (
+                                             {deleteExpenseMutation.isPending && deleteExpenseMutation.variables?.id === expense.id ? (
                                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                              ) : null}
                                              Delete
@@ -502,6 +571,19 @@ export default function ExpensesPage() {
                     </Table>
                 )}
               </div>
+              {/* Load More Trigger / Button */}
+                <div ref={loadMoreRef} className="mt-4 flex justify-center">
+                  <Button
+                    onClick={() => fetchNextPage()}
+                    disabled={!hasNextPage || isFetchingNextPage}
+                    variant="outline"
+                  >
+                    {isFetchingNextPage ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : null}
+                    {hasNextPage ? 'Load More' : 'No more expenses'}
+                  </Button>
+                </div>
           </CardContent>
         </Card>
       </div>

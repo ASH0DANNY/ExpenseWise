@@ -1,3 +1,4 @@
+
 import type { Timestamp } from 'firebase/firestore';
 
 export interface Expense {
@@ -26,3 +27,11 @@ export interface IncomeSetting {
     id: string; // Should be a predictable ID, e.g., 'userIncome'
     amount: number;
 }
+
+// New interface for the summary document
+export interface SummaryData {
+    id: string; // Should be a predictable ID, e.g., 'globalSummary'
+    totalExpenses: number;
+    expenseCount: number; // Optional: track the number of expenses
+}
+

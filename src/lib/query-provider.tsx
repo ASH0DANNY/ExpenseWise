@@ -1,3 +1,4 @@
+
 "use client";
 
 import * as React from 'react';
@@ -8,12 +9,13 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       // Configure default query options if needed
-      // staleTime: 1000 * 60 * 5, // 5 minutes
+      staleTime: 1000 * 60 * 1, // 1 minute default stale time
+      refetchOnWindowFocus: false, // Consider disabling aggressive refetches
     },
   },
 });
 
-// Dynamically import DevTools in development mode
+// Dynamically import DevTools only in development and on the client
 const ReactQueryDevtools =
   process.env.NODE_ENV === "development"
     ? React.lazy(() =>
@@ -21,25 +23,24 @@ const ReactQueryDevtools =
           default: res.ReactQueryDevtools,
         }))
       )
-    : () => null; // Return null in production
+    : () => null;
 
 export function QueryProvider({ children }: { children: React.ReactNode }) {
-  const [showDevtools, setShowDevtools] = React.useState(false);
+  const [isClient, setIsClient] = React.useState(false);
 
-  // Show devtools only on client-side in development
   React.useEffect(() => {
-    if (process.env.NODE_ENV === "development") {
-      setShowDevtools(true);
-    }
+    // Ensure this runs only on the client side
+    setIsClient(true);
   }, []);
 
   return (
     // Provide the client to your App
     <QueryClientProvider client={queryClient}>
       {children}
-      {showDevtools && (
+      {/* Render DevTools only on the client and in development */}
+      {isClient && process.env.NODE_ENV === 'development' && (
          <React.Suspense fallback={null}>
-           <ReactQueryDevtools initialIsOpen={false} />
+           <ReactQueryDevtools initialIsOpen={false} position="bottom" />
          </React.Suspense>
       )}
     </QueryClientProvider>

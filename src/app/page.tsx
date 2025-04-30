@@ -13,14 +13,16 @@ import {
     Timestamp, // Import Timestamp
     doc,
     getDoc,
-    setDoc
+    setDoc,
+    updateDoc,
+    increment // Import increment for summary updates
 } from "firebase/firestore";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { DollarSign, Landmark, TrendingDown, Loader2, Edit } from "lucide-react"
 import { format } from "date-fns"
-import type { Expense, IncomeSetting } from "@/types"; // Import types
+import type { Expense, IncomeSetting, SummaryData } from "@/types"; // Import types including SummaryData
 import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,17 +43,19 @@ import { useIsClient } from "@/hooks/use-is-client"; // Import useIsClient
 
 // Query Keys
 const EXPENSES_QUERY_KEY = "expenses";
-const DASHBOARD_SUMMARY_QUERY_KEY = "dashboardSummary";
 const INCOME_SETTING_QUERY_KEY = "incomeSetting";
-const INCOME_DOC_ID = "userIncome"; // Use a fixed ID for the income setting document
+const SUMMARY_DATA_QUERY_KEY = "summaryData"; // New key for summary
+const INCOME_DOC_ID = "userIncome"; // Fixed ID for the income setting document
+const SUMMARY_DOC_ID = "globalSummary"; // Fixed ID for the summary document
 
 // Firestore collection references
 const expensesCollectionRef = collection(db, "expenses");
-const settingsCollectionRef = collection(db, "settings"); // Collection for settings like income
+const settingsCollectionRef = collection(db, "settings"); // Collection for settings like income and summary
 
 
 // Helper to convert Firebase Timestamp to Date
 const timestampToDate = (timestamp: Timestamp | Date): Date => {
+    if (!timestamp) return new Date(); // Handle null/undefined case
     return timestamp instanceof Timestamp ? timestamp.toDate() : timestamp;
 };
 
@@ -71,12 +75,31 @@ export default function DashboardPage() {
         if (docSnap.exists()) {
             return { id: docSnap.id, ...docSnap.data() } as IncomeSetting;
         } else {
-            // Return a default if it doesn't exist, or handle accordingly
-            return { id: INCOME_DOC_ID, amount: 0 }; // Default income to 0
+            // Create if it doesn't exist with default 0
+            await setDoc(docRef, { amount: 0 });
+            return { id: INCOME_DOC_ID, amount: 0 };
         }
     },
     staleTime: Infinity, // Income setting likely doesn't change often externally
   });
+
+  // Fetch Summary Data (Total Expenses)
+   const { data: summaryData, isLoading: isLoadingSummary, error: errorSummary } = useQuery<SummaryData>({
+     queryKey: [SUMMARY_DATA_QUERY_KEY],
+     queryFn: async () => {
+       const docRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
+       const docSnap = await getDoc(docRef);
+       if (docSnap.exists()) {
+         return { id: docSnap.id, ...docSnap.data() } as SummaryData;
+       } else {
+         // If summary doesn't exist, create it (maybe calculate initial from existing expenses - complex, or just start at 0)
+         await setDoc(docRef, { totalExpenses: 0, expenseCount: 0 }); // Initialize
+         return { id: SUMMARY_DOC_ID, totalExpenses: 0, expenseCount: 0 };
+       }
+     },
+     staleTime: 1000 * 60, // Stale after 1 minute, refetch periodically or rely on invalidation
+   });
+
 
   // Fetch Recent Expenses (limit 5)
   const { data: recentExpenses = [], isLoading: isLoadingExpenses, error: errorExpenses } = useQuery<Expense[]>({
@@ -94,46 +117,20 @@ export default function DashboardPage() {
         });
         return expensesData;
     },
+     staleTime: 1000 * 60 * 2, // Stale after 2 minutes for recent expenses
   });
 
-   // Fetch ALL Expenses for calculation (consider performance for very large datasets)
-   // Use enabled flag to prevent fetching on server render if causing hydration issues
-   const { data: allExpenses = [], isLoading: isLoadingAllExpenses, error: errorAllExpenses } = useQuery<Expense[]>({
-     queryKey: [EXPENSES_QUERY_KEY, 'all'], // Differentiate query key
-     queryFn: async () => {
-       // No limit, order not strictly necessary for sum but good practice
-       const q = query(expensesCollectionRef, orderBy("date", "desc"));
-       const querySnapshot = await getDocs(q);
-       // Only return amount for calculation if needed, but full data might be useful elsewhere
-       return querySnapshot.docs.map(doc => {
-         const data = doc.data();
-         return {
-            id: doc.id,
-            ...data,
-            date: timestampToDate(data.date)
-         } as Expense;
-       });
-     },
-     enabled: isClient, // Only fetch on the client to potentially avoid hydration mismatch
-     staleTime: 1000 * 60, // Stale after 1 minute
-   });
-
-
   // Combined loading state for UI elements that depend on multiple queries
-  const isLoading = isLoadingIncome || isLoadingExpenses || (isLoadingAllExpenses && !isClient); // Adjust loading based on client status
-  const loadError = errorIncome || errorExpenses || errorAllExpenses;
+  const isLoading = isLoadingIncome || isLoadingSummary || isLoadingExpenses;
+  const loadError = errorIncome || errorSummary || errorExpenses;
 
 
-  // Calculate summary data based on fetched data
-  const summaryData = React.useMemo(() => {
-    const totalExpenses = allExpenses.reduce((sum, exp) => sum + exp.amount, 0);
+  // Calculate balance using fetched income and summary
+  const balance = React.useMemo(() => {
     const currentIncome = incomeSetting?.amount ?? 0;
-    return {
-      income: currentIncome,
-      expenses: totalExpenses,
-      balance: currentIncome - totalExpenses,
-    };
-  }, [allExpenses, incomeSetting]); // Recalculate when expenses or income setting change
+    const totalExpenses = summaryData?.totalExpenses ?? 0;
+    return currentIncome - totalExpenses;
+  }, [incomeSetting, summaryData]);
 
 
    // Mutation for updating income
@@ -144,10 +141,13 @@ export default function DashboardPage() {
        return incomeAmount;
      },
      onSuccess: (updatedIncome) => {
-        // Invalidate queries to refetch data
-        queryClient.invalidateQueries({ queryKey: [INCOME_SETTING_QUERY_KEY] });
-        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'all'] }); // Invalidate all expenses to recalculate summary
-        queryClient.invalidateQueries({ queryKey: [DASHBOARD_SUMMARY_QUERY_KEY] }); // Invalidate summary if you have a separate query for it
+        // Update the cache directly for immediate feedback
+        queryClient.setQueryData<IncomeSetting>([INCOME_SETTING_QUERY_KEY], (oldData) => ({
+             ...(oldData ?? { id: INCOME_DOC_ID }), // Keep old data if exists, else provide default structure
+             amount: updatedIncome,
+         }));
+        // Invalidate queries to ensure eventual consistency, though cache update is faster
+        // queryClient.invalidateQueries({ queryKey: [INCOME_SETTING_QUERY_KEY] }); // Optional if setQueryData is used
 
         toast({
             title: "Income Updated",
@@ -191,13 +191,13 @@ export default function DashboardPage() {
   if (!isClient && isLoading) {
       // Render skeletons or a loading indicator during SSR or initial client load
       return (
-         <div className="space-y-6">
+         <div className="space-y-6 animate-pulse">
             <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
-                 <Skeleton className="h-24" />
-                 <Skeleton className="h-24" />
-                 <Skeleton className="h-24" />
+                 <Skeleton className="h-24 rounded-lg" />
+                 <Skeleton className="h-24 rounded-lg" />
+                 <Skeleton className="h-24 rounded-lg" />
             </div>
-             <Skeleton className="h-[250px]" />
+             <Skeleton className="h-[250px] rounded-lg" />
          </div>
       );
   }
@@ -261,13 +261,12 @@ export default function DashboardPage() {
                      </form>
                  </DialogContent>
              </Dialog>
-            {/* <DollarSign className="h-4 w-4 text-muted-foreground" /> */}
           </CardHeader>
           <CardContent>
             {isLoadingIncome ? (
               <Skeleton className="h-8 w-3/4" />
             ) : (
-              <div className="text-2xl font-bold text-primary">${summaryData.income.toFixed(2)}</div>
+              <div className="text-2xl font-bold text-primary">${(incomeSetting?.amount ?? 0).toFixed(2)}</div>
             )}
           </CardContent>
         </Card>
@@ -279,11 +278,13 @@ export default function DashboardPage() {
             <TrendingDown className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-             {isLoadingAllExpenses && !isClient ? ( // Show skeleton if loading on client or initial load
+             {isLoadingSummary ? ( // Use summary loading state
                <Skeleton className="h-8 w-3/4" />
              ) : (
-               <div className="text-2xl font-bold text-destructive">${summaryData.expenses.toFixed(2)}</div>
+               <div className="text-2xl font-bold text-destructive">${(summaryData?.totalExpenses ?? 0).toFixed(2)}</div>
              )}
+             {/* Optionally show expense count */}
+             {/* <p className="text-xs text-muted-foreground">{summaryData?.expenseCount ?? 0} transactions</p> */}
           </CardContent>
         </Card>
 
@@ -294,11 +295,11 @@ export default function DashboardPage() {
             <Landmark className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-             {isLoading && !isClient ? ( // Use combined loading state here
+             {isLoading ? ( // Use combined loading state here
                <Skeleton className="h-8 w-3/4" />
              ) : (
-               <div className={`text-2xl font-bold ${summaryData.balance >= 0 ? '' : 'text-destructive'}`}>
-                    ${summaryData.balance.toFixed(2)}
+               <div className={`text-2xl font-bold ${balance >= 0 ? '' : 'text-destructive'}`}>
+                    ${balance.toFixed(2)}
                 </div>
              )}
           </CardContent>
@@ -315,11 +316,11 @@ export default function DashboardPage() {
              {isLoadingExpenses ? (
               // Use multiple skeleton rows for better loading appearance
               <div className="space-y-2">
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full rounded" />
+                  <Skeleton className="h-10 w-full rounded" />
+                  <Skeleton className="h-10 w-full rounded" />
+                  <Skeleton className="h-10 w-full rounded" />
+                  <Skeleton className="h-10 w-full rounded" />
               </div>
 
              ) : recentExpenses.length === 0 ? (
@@ -356,3 +357,4 @@ export default function DashboardPage() {
     </div>
   )
 }
+
