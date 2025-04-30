@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -34,7 +34,7 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { useToast } from "@/hooks/use-toast"
-import { PlusCircle, Trash2, Edit } from "lucide-react"
+import { PlusCircle, Trash2, Edit, Loader2 } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,10 +46,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import type { Vendor } from "@/types"; // Import the Vendor type
+import type { Vendor, Expense } from "@/types"; // Import types
+import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 
 // Define localStorage key
 const LOCAL_STORAGE_KEY_VENDORS = 'expenseWiseApp_vendors';
+const LOCAL_STORAGE_KEY_EXPENSES = 'expenseWiseApp_expenses'; // For checking usage
 
 const vendorFormSchema = z.object({
   name: z.string().min(1, { message: "Vendor name cannot be empty." }),
@@ -63,37 +65,62 @@ type VendorFormValues = z.infer<typeof vendorFormSchema>
 // Mock data (fallback)
 const mockVendorsData: Vendor[] = [
   { id: 1, name: "SuperMart", contactPerson: "John Doe", contactEmail: "john.doe@supermart.com", contactPhone: "123-456-7890" },
-  { id: 2, name: "City Power", contactPerson: "", contactEmail: "billing@citypower.com", contactPhone: "" },
-  { id: 3, name: "Pizza Place", contactPerson: "Jane Smith", contactEmail: "", contactPhone: "987-654-3210" },
-  { id: 4, name: "Gas Station", contactPerson: "", contactEmail: "", contactPhone: "" },
-  { id: 5, name: "Landlord", contactPerson: "Mr. Property Owner", contactEmail: "landlord@email.com", contactPhone: "555-123-4567" },
+  { id: 2, name: "City Power" },
 ];
 
 export default function VendorsPage() {
-  const [vendors, setVendors] = React.useState<Vendor[]>(() => {
-    if (typeof window !== 'undefined') {
-      const savedVendors = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
-      if (savedVendors) {
-        try {
-          return JSON.parse(savedVendors);
-        } catch (error) {
-          console.error("Error parsing vendors from local storage:", error);
-          return mockVendorsData; // Fallback to mock data on error
-        }
-      }
-    }
-    return mockVendorsData; // Default mock data if no saved data or SSR
-  });
-
+  const [vendors, setVendors] = React.useState<Vendor[]>([]);
+  const [isLoading, setIsLoading] = React.useState(true);
   const [editingVendorId, setEditingVendorId] = React.useState<number | null>(null);
   const { toast } = useToast()
 
+  // Load data from localStorage on client-side mount
+  React.useEffect(() => {
+    let loadedVendors: Vendor[] = [];
+    const savedVendors = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
+    if (savedVendors) {
+      try {
+        loadedVendors = JSON.parse(savedVendors);
+      } catch (error) {
+        console.error("Error parsing vendors from local storage:", error);
+        // loadedVendors = mockVendorsData; // Optional: fallback to mock
+      }
+    }
+     // Use mock if empty (optional)
+    if(loadedVendors.length === 0) {
+        // loadedVendors = mockVendorsData;
+    }
+
+    setVendors(loadedVendors);
+    setIsLoading(false);
+
+     // --- Add localStorage listener ---
+     const handleStorageChange = (event: StorageEvent) => {
+        if (event.key === LOCAL_STORAGE_KEY_VENDORS) {
+             let updatedVendors: Vendor[] = [];
+             if (event.newValue) {
+                 try { updatedVendors = JSON.parse(event.newValue); }
+                 catch (error) { console.error("Error parsing vendors update:", error); }
+             }
+             setVendors(updatedVendors);
+        }
+     };
+
+      window.addEventListener('storage', handleStorageChange);
+
+      // --- Cleanup listener ---
+      return () => {
+        window.removeEventListener('storage', handleStorageChange);
+      };
+  }, []);
+
   // Persist vendors to localStorage whenever they change
   React.useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_KEY_VENDORS, JSON.stringify(vendors));
+     // Only save if not loading to prevent overwriting initial state potentially
+    if (!isLoading) {
+        localStorage.setItem(LOCAL_STORAGE_KEY_VENDORS, JSON.stringify(vendors));
     }
-  }, [vendors]);
+  }, [vendors, isLoading]);
 
   const form = useForm<VendorFormValues>({
     resolver: zodResolver(vendorFormSchema),
@@ -119,18 +146,18 @@ export default function VendorsPage() {
 
   function onSubmit(data: VendorFormValues) {
      const existingVendor = vendors.find(v => v.name.toLowerCase() === data.name.toLowerCase() && v.id !== editingVendorId);
-     if (existingVendor && editingVendorId === null) { // Check only when adding new
+     // Check for existing name only when adding a new vendor or when editing and the name has changed
+     if (existingVendor && (editingVendorId === null || vendors.find(v => v.id === editingVendorId)?.name.toLowerCase() !== data.name.toLowerCase())) {
          form.setError("name", { type: "manual", message: "Vendor name already exists." });
          return;
      }
 
     if (editingVendorId !== null) {
       // Update existing vendor
-      setVendors(prevVendors =>
-        prevVendors.map(vendor =>
+      const updatedVendors = vendors.map(vendor =>
           vendor.id === editingVendorId ? { ...vendor, ...data } : vendor
-        )
-      );
+        );
+      setVendors(updatedVendors);
       toast({
         title: "Vendor Updated",
         description: `Vendor "${data.name}" has been updated.`,
@@ -142,7 +169,8 @@ export default function VendorsPage() {
         id: (vendors.length > 0 ? Math.max(...vendors.map(v => v.id)) : 0) + 1, // More robust ID generation
         ...data,
       };
-      setVendors(prevVendors => [newVendor, ...prevVendors]);
+      const updatedVendors = [newVendor, ...vendors];
+      setVendors(updatedVendors);
       toast({
         title: "Vendor Added",
         description: `Vendor "${data.name}" has been added.`,
@@ -155,10 +183,33 @@ export default function VendorsPage() {
      const vendorToDelete = vendors.find(v => v.id === id);
      if (!vendorToDelete) return;
 
-     // Check if vendor is in use (optional - can be complex to check across expenses efficiently here)
-     // If needed, load expenses from localStorage and check `vendor` field.
+     // Check if vendor is in use by fetching expenses from localStorage
+      let isVendorInUse = false;
+      const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
+      if (savedExpenses) {
+          try {
+              const expensesData: Expense[] = JSON.parse(savedExpenses);
+              isVendorInUse = expensesData.some((exp) => exp.vendor === vendorToDelete.name);
+          } catch (error) {
+              console.error("Error checking expense usage:", error);
+              toast({ title: "Error checking usage", description: "Could not verify if vendor is in use.", variant: "destructive" });
+              return;
+          }
+      }
 
-     setVendors(prevVendors => prevVendors.filter(vendor => vendor.id !== id));
+      if (isVendorInUse) {
+          toast({
+              title: "Cannot Delete Vendor",
+              description: `Vendor "${vendorToDelete.name}" is currently assigned to one or more expenses.`,
+              variant: "destructive",
+          });
+          return;
+      }
+
+
+     const updatedVendors = vendors.filter(vendor => vendor.id !== id);
+     setVendors(updatedVendors);
+
      toast({
       title: "Vendor Deleted",
       description: `Vendor "${vendorToDelete.name}" has been removed.`,
@@ -181,6 +232,7 @@ export default function VendorsPage() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
+      {/* Add/Edit Vendor Form Card */}
       <div className="lg:col-span-1">
         <Card>
           <CardHeader>
@@ -197,7 +249,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Vendor Name</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., SuperMart, Landlord" {...field} />
+                        <Input placeholder="e.g., SuperMart, Landlord" {...field} disabled={isLoading}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -210,7 +262,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Contact Person (Optional)</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., John Doe" {...field} />
+                        <Input placeholder="e.g., John Doe" {...field} disabled={isLoading}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -223,7 +275,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Contact Email (Optional)</FormLabel>
                       <FormControl>
-                        <Input type="email" placeholder="e.g., contact@example.com" {...field} />
+                        <Input type="email" placeholder="e.g., contact@example.com" {...field} disabled={isLoading}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -236,7 +288,7 @@ export default function VendorsPage() {
                     <FormItem>
                       <FormLabel>Contact Phone (Optional)</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., 123-456-7890" {...field} />
+                        <Input placeholder="e.g., 123-456-7890" {...field} disabled={isLoading}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -245,11 +297,11 @@ export default function VendorsPage() {
               </CardContent>
               <CardFooter className="flex justify-between">
                  {editingVendorId !== null && (
-                   <Button type="button" variant="outline" onClick={cancelEditing}>
+                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading}>
                      Cancel
                    </Button>
                  )}
-                <Button type="submit" className={editingVendorId === null ? "w-full" : ""}>
+                <Button type="submit" className={editingVendorId === null ? "w-full" : ""} disabled={isLoading}>
                   {editingVendorId !== null ? <Edit className="mr-2 h-4 w-4" /> : <PlusCircle className="mr-2 h-4 w-4" />}
                   {editingVendorId !== null ? "Update Vendor" : "Add Vendor"}
                 </Button>
@@ -259,6 +311,7 @@ export default function VendorsPage() {
         </Card>
       </div>
 
+      {/* Vendor List Card */}
       <div className="lg:col-span-2">
         <Card>
           <CardHeader>
@@ -267,6 +320,12 @@ export default function VendorsPage() {
           </CardHeader>
           <CardContent>
              <div className="overflow-x-auto">
+             {isLoading ? (
+                 <div className="flex justify-center items-center p-4">
+                     <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                     <span className="ml-2 text-muted-foreground">Loading vendors...</span>
+                 </div>
+             ) : (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -280,7 +339,7 @@ export default function VendorsPage() {
                 <TableBody>
                    {vendors.length === 0 && (
                        <TableRow>
-                         <TableCell colSpan={5} className="text-center text-muted-foreground">
+                         <TableCell colSpan={5} className="text-center text-muted-foreground py-4">
                            No vendors added yet.
                          </TableCell>
                        </TableRow>
@@ -317,7 +376,7 @@ export default function VendorsPage() {
                              <AlertDialogHeader>
                                <AlertDialogTitle>Are you sure?</AlertDialogTitle>
                                <AlertDialogDescription>
-                                 This action cannot be undone. This will permanently delete the vendor "{vendor.name}".
+                                 This action cannot be undone. This will permanently delete the vendor "{vendor.name}". Make sure no expenses are using this vendor.
                                </AlertDialogDescription>
                              </AlertDialogHeader>
                              <AlertDialogFooter>
@@ -335,6 +394,7 @@ export default function VendorsPage() {
                   ))}
                 </TableBody>
               </Table>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -342,8 +402,3 @@ export default function VendorsPage() {
     </div>
   )
 }
-
-// Helper to get buttonVariants for AlertDialogAction
-import { buttonVariants } from "@/components/ui/button"
-
-    

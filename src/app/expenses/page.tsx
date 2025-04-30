@@ -7,7 +7,7 @@ import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { format } from "date-fns"
 
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -50,9 +50,21 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
-import { CalendarIcon, PlusCircle, Trash2 } from "lucide-react"
+import { CalendarIcon, PlusCircle, Trash2, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import type { Expense } from "@/types"; // Import the Expense type
+import type { Expense, Category, Vendor } from "@/types"; // Import types
+import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 
 // Define localStorage keys
 const LOCAL_STORAGE_KEY_EXPENSES = 'expenseWiseApp_expenses';
@@ -69,130 +81,119 @@ const expenseFormSchema = z.object({
 
 type ExpenseFormValues = z.infer<typeof expenseFormSchema>
 
-// Mock data (fallback)
-const mockCategoriesData = ["Groceries", "Utilities", "Dining Out", "Transport", "Entertainment", "Rent", "Other"];
-const mockVendorsData = ["SuperMart", "City Power", "Pizza Place", "Gas Station", "Cinema", "Landlord", "Online Store"];
+// Mock data (used only if localStorage is empty or invalid)
+const mockCategoriesData: Category[] = [ { id: 1, name: "Groceries"}, { id: 2, name: "Utilities"}, { id: 3, name: "Dining Out"} ];
+const mockVendorsData: Vendor[] = [ { id: 1, name: "SuperMart"}, { id: 2, name: "City Power"}, { id: 3, name: "Pizza Place"} ];
 const mockExpensesData: Expense[] = [
   { id: 1, date: new Date(2024, 6, 28), category: "Groceries", vendor: "SuperMart", amount: 75.50, notes: "Weekly shopping" },
   { id: 2, date: new Date(2024, 6, 27), category: "Utilities", vendor: "City Power", amount: 120.00, notes: "Electricity bill" },
-  { id: 3, date: new Date(2024, 6, 26), category: "Dining Out", vendor: "Pizza Place", amount: 45.25 },
-  { id: 4, date: new Date(2024, 6, 25), category: "Transport", vendor: "Gas Station", amount: 50.00 },
-  { id: 5, date: new Date(2024, 6, 24), category: "Entertainment", vendor: "Cinema", amount: 30.00, notes: "Movie tickets" },
-  { id: 6, date: new Date(2024, 6, 1), category: "Rent", vendor: "Landlord", amount: 1200.00 },
 ];
 
 const NO_VENDOR_VALUE = "__none__"; // Unique value for "None" option
 
 export default function ExpensesPage() {
-    const [expenses, setExpenses] = React.useState<Expense[]>(() => {
-    if (typeof window !== 'undefined') {
-      const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
-      if (savedExpenses) {
-        try {
-          // Parse dates correctly from stored JSON strings
-          const parsedExpenses = JSON.parse(savedExpenses).map((exp: any) => ({
-            ...exp,
-            date: new Date(exp.date) // Convert date string back to Date object
-          }));
-          return parsedExpenses;
-        } catch (error) {
-          console.error("Error parsing expenses from local storage:", error);
-          return mockExpensesData; // Fallback to mock data on error
-        }
-      }
-    }
-    return mockExpensesData; // Default mock data if no saved data or SSR
-  });
-
-  const [categories, setCategories] = React.useState<string[]>(() => {
-     if (typeof window !== 'undefined') {
-       const saved = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
-       // Parse categories which are stored as full objects, extract names
-       if (saved) {
-           try {
-              const parsedCategories = JSON.parse(saved);
-              return parsedCategories.map((cat: { id: number, name: string }) => cat.name);
-           } catch (error) {
-              console.error("Error parsing categories from local storage:", error);
-              return mockCategoriesData;
-           }
-       }
-     }
-     return mockCategoriesData;
-  });
-
-  const [vendors, setVendors] = React.useState<string[]>(() => {
-     if (typeof window !== 'undefined') {
-       const saved = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
-       // Parse vendors which are stored as full objects, extract names
-       if (saved) {
-         try {
-            const parsedVendors = JSON.parse(saved);
-            return parsedVendors.map((ven: { id: number, name: string }) => ven.name);
-         } catch (error) {
-            console.error("Error parsing vendors from local storage:", error);
-            return mockVendorsData;
-         }
-       }
-     }
-     return mockVendorsData;
-  });
-
+  const [expenses, setExpenses] = React.useState<Expense[]>([]);
+  const [categories, setCategories] = React.useState<Category[]>([]);
+  const [vendors, setVendors] = React.useState<Vendor[]>([]);
+  const [isLoading, setIsLoading] = React.useState(true); // Add loading state
   const { toast } = useToast()
+
+  // Load data from localStorage on client-side mount
+  React.useEffect(() => {
+    let loadedExpenses: Expense[] = [];
+    let loadedCategories: Category[] = [];
+    let loadedVendors: Vendor[] = [];
+
+    // Load Expenses
+    const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
+    if (savedExpenses) {
+      try {
+        loadedExpenses = JSON.parse(savedExpenses).map((exp: any) => ({
+          ...exp,
+          date: new Date(exp.date)
+        }));
+      } catch (error) { console.error("Error parsing expenses:", error); }
+    }
+     // Use mock if empty (optional)
+     if (loadedExpenses.length === 0) {
+        // loadedExpenses = mockExpensesData;
+     }
+
+
+    // Load Categories
+    const savedCategories = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
+    if (savedCategories) {
+       try {
+          loadedCategories = JSON.parse(savedCategories);
+       } catch (error) { console.error("Error parsing categories:", error); }
+    }
+     // Use mock if empty (optional)
+    if (loadedCategories.length === 0) {
+        // loadedCategories = mockCategoriesData;
+    }
+
+    // Load Vendors
+    const savedVendors = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
+    if (savedVendors) {
+       try {
+          loadedVendors = JSON.parse(savedVendors);
+       } catch (error) { console.error("Error parsing vendors:", error); }
+    }
+      // Use mock if empty (optional)
+     if (loadedVendors.length === 0) {
+         // loadedVendors = mockVendorsData;
+     }
+
+    setExpenses(loadedExpenses);
+    setCategories(loadedCategories);
+    setVendors(loadedVendors);
+    setIsLoading(false);
+
+    // --- Add localStorage listener ---
+    const handleStorageChange = (event: StorageEvent) => {
+        if (event.key === LOCAL_STORAGE_KEY_EXPENSES) {
+            let updatedExpenses: Expense[] = [];
+            if (event.newValue) {
+                try {
+                 updatedExpenses = JSON.parse(event.newValue).map((exp: any) => ({ ...exp, date: new Date(exp.date) }));
+                } catch (error) { console.error("Error parsing expenses update:", error); }
+            }
+            setExpenses(updatedExpenses); // Directly update state
+        }
+        if (event.key === LOCAL_STORAGE_KEY_CATEGORIES) {
+            let updatedCategories: Category[] = [];
+            if (event.newValue) {
+                try { updatedCategories = JSON.parse(event.newValue); }
+                catch (error) { console.error("Error parsing categories update:", error); }
+            }
+            setCategories(updatedCategories);
+        }
+        if (event.key === LOCAL_STORAGE_KEY_VENDORS) {
+            let updatedVendors: Vendor[] = [];
+             if (event.newValue) {
+                 try { updatedVendors = JSON.parse(event.newValue); }
+                 catch (error) { console.error("Error parsing vendors update:", error); }
+             }
+             setVendors(updatedVendors);
+        }
+    };
+
+      window.addEventListener('storage', handleStorageChange);
+
+      // --- Cleanup listener ---
+      return () => {
+        window.removeEventListener('storage', handleStorageChange);
+      };
+  }, []); // Empty dependency array ensures this runs only once on mount
+
 
   // Persist expenses to localStorage whenever they change
   React.useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_KEY_EXPENSES, JSON.stringify(expenses));
+    // Only save if not loading to prevent overwriting initial state potentially
+    if (!isLoading) {
+        localStorage.setItem(LOCAL_STORAGE_KEY_EXPENSES, JSON.stringify(expenses));
     }
-  }, [expenses]);
-
-  // Effect to update categories/vendors if they change in other pages (via localStorage)
-  React.useEffect(() => {
-    const handleStorageChange = (event: StorageEvent) => {
-      if (event.key === LOCAL_STORAGE_KEY_CATEGORIES && event.newValue) {
-        try {
-            const updatedCategories = JSON.parse(event.newValue);
-            setCategories(updatedCategories.map((cat: { id: number, name: string }) => cat.name));
-        } catch (error) {
-            console.error("Error parsing categories update from storage event:", error);
-        }
-      }
-      if (event.key === LOCAL_STORAGE_KEY_VENDORS && event.newValue) {
-         try {
-            const updatedVendors = JSON.parse(event.newValue);
-            setVendors(updatedVendors.map((ven: { id: number, name: string }) => ven.name));
-         } catch (error) {
-            console.error("Error parsing vendors update from storage event:", error);
-         }
-      }
-    };
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('storage', handleStorageChange);
-      // Initial load check in case localStorage was updated while the page was inactive
-       const currentSavedCategories = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
-        if (currentSavedCategories) {
-            try {
-                 const parsedCategories = JSON.parse(currentSavedCategories);
-                 setCategories(parsedCategories.map((cat: { id: number, name: string }) => cat.name));
-            } catch {}
-        }
-        const currentSavedVendors = localStorage.getItem(LOCAL_STORAGE_KEY_VENDORS);
-        if (currentSavedVendors) {
-            try {
-                const parsedVendors = JSON.parse(currentSavedVendors);
-                setVendors(parsedVendors.map((ven: { id: number, name: string }) => ven.name));
-            } catch {}
-        }
-    }
-
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('storage', handleStorageChange);
-      }
-    };
-  }, []); // Empty dependency array means this runs once on mount and cleans up on unmount
+  }, [expenses, isLoading]);
 
 
   const form = useForm<ExpenseFormValues>({
@@ -217,7 +218,10 @@ export default function ExpensesPage() {
         id: (expenses.length > 0 ? Math.max(...expenses.map(e => e.id)) : 0) + 1, // More robust ID generation
         ...expenseData,
     };
-    setExpenses(prevExpenses => [newExpense, ...prevExpenses]); // Add to the top
+
+    const updatedExpenses = [newExpense, ...expenses]; // Add to the top
+    setExpenses(updatedExpenses); // Update state first
+
     toast({
       title: "Expense Added",
       description: `Added ${newExpense.category} expense of $${newExpense.amount.toFixed(2)}.`,
@@ -232,7 +236,8 @@ export default function ExpensesPage() {
   }
 
   function deleteExpense(id: number) {
-     setExpenses(prevExpenses => prevExpenses.filter(expense => expense.id !== id));
+     const updatedExpenses = expenses.filter(expense => expense.id !== id);
+     setExpenses(updatedExpenses); // Update state first
      toast({
       title: "Expense Deleted",
       description: `Successfully removed the expense record.`,
@@ -243,6 +248,7 @@ export default function ExpensesPage() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
+      {/* Add Expense Form Card */}
       <div className="lg:col-span-1">
         <Card>
           <CardHeader>
@@ -252,6 +258,7 @@ export default function ExpensesPage() {
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)}>
               <CardContent className="space-y-4">
+                {/* Date Field */}
                 <FormField
                   control={form.control}
                   name="date"
@@ -293,6 +300,7 @@ export default function ExpensesPage() {
                     </FormItem>
                   )}
                 />
+                {/* Amount Field */}
                 <FormField
                   control={form.control}
                   name="amount"
@@ -300,68 +308,69 @@ export default function ExpensesPage() {
                     <FormItem>
                       <FormLabel>Amount</FormLabel>
                       <FormControl>
-                         {/* Set value to empty string if undefined to avoid React warning */}
                          <Input type="number" placeholder="0.00" {...field} value={field.value ?? ""} step="0.01" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
+                {/* Category Field */}
                  <FormField
                   control={form.control}
                   name="category"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Category</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value || ""}>
+                      <Select onValueChange={field.onChange} value={field.value || ""} disabled={isLoading || categories.length === 0}>
                         <FormControl>
                           <SelectTrigger>
-                            <SelectValue placeholder="Select a category" />
+                            <SelectValue placeholder={isLoading ? "Loading categories..." : "Select a category"} />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
                           {categories.map((category) => (
-                            <SelectItem key={category} value={category}>
-                              {category}
+                            <SelectItem key={category.id} value={category.name}>
+                              {category.name}
                             </SelectItem>
                           ))}
-                           {/* Ensure a valid value if the list is empty */}
-                           {categories.length === 0 && <SelectItem value="-" disabled>No categories available</SelectItem>}
+                           {/* Show disabled state */}
+                           {categories.length === 0 && !isLoading && <SelectItem value="-" disabled>No categories available</SelectItem>}
                         </SelectContent>
                       </Select>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
+                 {/* Vendor Field */}
                 <FormField
                   control={form.control}
                   name="vendor"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Vendor (Optional)</FormLabel>
-                      {/* Use `value={field.value || ""}` to handle controlled component behavior with empty string default */}
-                      <Select onValueChange={field.onChange} value={field.value || ""}>
+                      <Select onValueChange={field.onChange} value={field.value || ""} disabled={isLoading}>
                          <FormControl>
                           <SelectTrigger>
-                             <SelectValue placeholder="Select a vendor or leave blank" />
+                             <SelectValue placeholder={isLoading ? "Loading vendors..." : "Select a vendor or leave blank"} />
                           </SelectTrigger>
                          </FormControl>
                         <SelectContent>
                            {/* Use a unique, non-empty value for the "None" option */}
                            <SelectItem value={NO_VENDOR_VALUE}>None</SelectItem>
-                          {vendors.map((vendor) => (
-                            <SelectItem key={vendor} value={vendor}>
-                              {vendor}
+                           {vendors.map((vendor) => (
+                            <SelectItem key={vendor.id} value={vendor.name}>
+                              {vendor.name}
                             </SelectItem>
                           ))}
-                           {/* Ensure a valid value if the list is empty */}
-                          {vendors.length === 0 && <SelectItem value="-" disabled>No vendors available</SelectItem>}
+                           {/* Show disabled state */}
+                           {vendors.length === 0 && !isLoading && <SelectItem value="-" disabled>No vendors available</SelectItem>}
                         </SelectContent>
                       </Select>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
+                 {/* Notes Field */}
                  <FormField
                   control={form.control}
                   name="notes"
@@ -377,7 +386,7 @@ export default function ExpensesPage() {
                 />
               </CardContent>
               <CardFooter>
-                <Button type="submit" className="w-full">
+                <Button type="submit" className="w-full" disabled={isLoading}>
                   <PlusCircle className="mr-2 h-4 w-4" /> Add Expense
                 </Button>
               </CardFooter>
@@ -386,6 +395,7 @@ export default function ExpensesPage() {
         </Card>
       </div>
 
+      {/* Expense History Table Card */}
       <div className="lg:col-span-2">
         <Card>
           <CardHeader>
@@ -394,47 +404,73 @@ export default function ExpensesPage() {
           </CardHeader>
           <CardContent>
              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Category</TableHead>
-                      <TableHead>Vendor</TableHead>
-                      <TableHead>Notes</TableHead>
-                      <TableHead className="text-right">Amount</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {expenses.length === 0 && (
-                       <TableRow>
-                         <TableCell colSpan={6} className="text-center text-muted-foreground">
-                           No expenses recorded yet.
-                         </TableCell>
-                       </TableRow>
-                    )}
-                    {expenses.map((expense) => (
-                      <TableRow key={expense.id}>
-                        <TableCell>{format(expense.date, "yyyy-MM-dd")}</TableCell>
-                        <TableCell><Badge variant="secondary">{expense.category}</Badge></TableCell>
-                        <TableCell>{expense.vendor || "-"}</TableCell>
-                        <TableCell className="max-w-[150px] truncate" title={expense.notes ?? undefined}>{expense.notes || "-"}</TableCell>
-                        <TableCell className="text-right">${expense.amount.toFixed(2)}</TableCell>
-                         <TableCell>
-                           <Button
-                             variant="ghost"
-                             size="icon"
-                             className="text-destructive hover:text-destructive"
-                             onClick={() => deleteExpense(expense.id)}
-                             aria-label="Delete expense"
-                           >
-                             <Trash2 className="h-4 w-4" />
-                           </Button>
-                         </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                {isLoading ? (
+                    <div className="flex justify-center items-center p-4">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                        <span className="ml-2 text-muted-foreground">Loading expenses...</span>
+                    </div>
+                ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Date</TableHead>
+                          <TableHead>Category</TableHead>
+                          <TableHead>Vendor</TableHead>
+                          <TableHead>Notes</TableHead>
+                          <TableHead className="text-right">Amount</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {expenses.length === 0 && (
+                           <TableRow>
+                             <TableCell colSpan={6} className="text-center text-muted-foreground py-4">
+                               No expenses recorded yet.
+                             </TableCell>
+                           </TableRow>
+                        )}
+                        {expenses.map((expense) => (
+                          <TableRow key={expense.id}>
+                            <TableCell>{format(expense.date, "yyyy-MM-dd")}</TableCell>
+                            <TableCell><Badge variant="secondary">{expense.category}</Badge></TableCell>
+                            <TableCell>{expense.vendor || "-"}</TableCell>
+                            <TableCell className="max-w-[150px] truncate" title={expense.notes ?? undefined}>{expense.notes || "-"}</TableCell>
+                            <TableCell className="text-right">${expense.amount.toFixed(2)}</TableCell>
+                             <TableCell>
+                                <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="text-destructive hover:text-destructive"
+                                            aria-label="Delete expense"
+                                        >
+                                            <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                        <AlertDialogHeader>
+                                        <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                                        <AlertDialogDescription>
+                                            This action cannot be undone. This will permanently delete this expense record.
+                                        </AlertDialogDescription>
+                                        </AlertDialogHeader>
+                                        <AlertDialogFooter>
+                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                        <AlertDialogAction
+                                            className={buttonVariants({ variant: "destructive" })}
+                                            onClick={() => deleteExpense(expense.id)}>
+                                            Delete
+                                        </AlertDialogAction>
+                                        </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                </AlertDialog>
+                             </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                )}
               </div>
           </CardContent>
         </Card>
@@ -442,5 +478,3 @@ export default function ExpensesPage() {
     </div>
   )
 }
-
-    

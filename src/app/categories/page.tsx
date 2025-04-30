@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -34,7 +34,7 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { useToast } from "@/hooks/use-toast"
-import { PlusCircle, Trash2, Edit, Tag } from "lucide-react"
+import { PlusCircle, Trash2, Edit, Tag, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
   AlertDialog,
@@ -47,7 +47,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import type { Category } from "@/types"; // Import the Category type
+import type { Category, Expense } from "@/types"; // Import types
+import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
 
 // Define localStorage keys
 const LOCAL_STORAGE_KEY_CATEGORIES = 'expenseWiseApp_categories';
@@ -55,8 +56,6 @@ const LOCAL_STORAGE_KEY_EXPENSES = 'expenseWiseApp_expenses'; // For checking us
 
 const categoryFormSchema = z.object({
   name: z.string().min(1, { message: "Category name cannot be empty." }),
-  // Add description or icon fields if needed later
-  // description: z.string().optional(),
 })
 
 type CategoryFormValues = z.infer<typeof categoryFormSchema>
@@ -65,40 +64,61 @@ type CategoryFormValues = z.infer<typeof categoryFormSchema>
 const mockCategoriesData: Category[] = [
   { id: 1, name: "Groceries" },
   { id: 2, name: "Utilities" },
-  { id: 3, name: "Dining Out" },
-  { id: 4, name: "Transport" },
-  { id: 5, name: "Entertainment" },
-  { id: 6, name: "Rent" },
-  { id: 7, name: "Healthcare" },
-  { id: 8, name: "Clothing" },
-  { id: 9, name: "Other" },
 ];
 
 export default function CategoriesPage() {
-  const [categories, setCategories] = React.useState<Category[]>(() => {
-    if (typeof window !== 'undefined') {
-      const savedCategories = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
-      if (savedCategories) {
-        try {
-          return JSON.parse(savedCategories);
-        } catch (error) {
-          console.error("Error parsing categories from local storage:", error);
-          return mockCategoriesData; // Fallback to mock data on error
-        }
-      }
-    }
-    return mockCategoriesData; // Default mock data if no saved data or SSR
-  });
-
+  const [categories, setCategories] = React.useState<Category[]>([]);
+  const [isLoading, setIsLoading] = React.useState(true);
   const [editingCategoryId, setEditingCategoryId] = React.useState<number | null>(null);
   const { toast } = useToast()
 
+   // Load data from localStorage on client-side mount
+   React.useEffect(() => {
+    let loadedCategories: Category[] = [];
+    const savedCategories = localStorage.getItem(LOCAL_STORAGE_KEY_CATEGORIES);
+    if (savedCategories) {
+      try {
+        loadedCategories = JSON.parse(savedCategories);
+      } catch (error) {
+        console.error("Error parsing categories from local storage:", error);
+        // loadedCategories = mockCategoriesData; // Optional: fallback to mock
+      }
+    }
+    // Use mock if empty (optional)
+    if(loadedCategories.length === 0) {
+        // loadedCategories = mockCategoriesData;
+    }
+
+    setCategories(loadedCategories);
+    setIsLoading(false);
+
+     // --- Add localStorage listener ---
+     const handleStorageChange = (event: StorageEvent) => {
+        if (event.key === LOCAL_STORAGE_KEY_CATEGORIES) {
+             let updatedCategories: Category[] = [];
+             if (event.newValue) {
+                 try { updatedCategories = JSON.parse(event.newValue); }
+                 catch (error) { console.error("Error parsing categories update:", error); }
+             }
+             setCategories(updatedCategories);
+        }
+    };
+
+      window.addEventListener('storage', handleStorageChange);
+
+      // --- Cleanup listener ---
+      return () => {
+        window.removeEventListener('storage', handleStorageChange);
+      };
+  }, []);
+
   // Persist categories to localStorage whenever they change
   React.useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_KEY_CATEGORIES, JSON.stringify(categories));
+     // Only save if not loading to prevent overwriting initial state potentially
+    if (!isLoading) {
+        localStorage.setItem(LOCAL_STORAGE_KEY_CATEGORIES, JSON.stringify(categories));
     }
-  }, [categories]);
+  }, [categories, isLoading]);
 
   const form = useForm<CategoryFormValues>({
     resolver: zodResolver(categoryFormSchema),
@@ -128,11 +148,10 @@ export default function CategoriesPage() {
 
     if (editingCategoryId !== null) {
       // Update existing category
-      setCategories(prevCategories =>
-        prevCategories.map(category =>
+      const updatedCategories = categories.map(category =>
           category.id === editingCategoryId ? { ...category, name: data.name } : category // Only update name
-        )
       );
+      setCategories(updatedCategories);
       toast({
         title: "Category Updated",
         description: `Category "${data.name}" has been updated.`,
@@ -144,7 +163,8 @@ export default function CategoriesPage() {
         id: (categories.length > 0 ? Math.max(...categories.map(c => c.id)) : 0) + 1, // More robust ID generation
         name: data.name,
       };
-      setCategories(prevCategories => [newCategory, ...prevCategories]);
+      const updatedCategories = [newCategory, ...categories];
+      setCategories(updatedCategories);
       toast({
         title: "Category Added",
         description: `Category "${data.name}" has been added.`,
@@ -159,16 +179,16 @@ export default function CategoriesPage() {
 
      // Check if category is in use by fetching expenses from localStorage
      let isCategoryInUse = false;
-     if (typeof window !== 'undefined') {
-       const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
-       if (savedExpenses) {
-         try {
-           const expensesData = JSON.parse(savedExpenses);
-           isCategoryInUse = expensesData.some((exp: any) => exp.category === categoryToDelete.name);
-         } catch (error) {
-           console.error("Error checking expense usage:", error);
-           // Handle error, maybe prevent deletion as a precaution
-         }
+     const savedExpenses = localStorage.getItem(LOCAL_STORAGE_KEY_EXPENSES);
+     if (savedExpenses) {
+       try {
+         const expensesData: Expense[] = JSON.parse(savedExpenses);
+         isCategoryInUse = expensesData.some((exp) => exp.category === categoryToDelete.name);
+       } catch (error) {
+         console.error("Error checking expense usage:", error);
+         // Handle error, maybe prevent deletion as a precaution
+         toast({ title: "Error checking usage", description: "Could not verify if category is in use.", variant: "destructive" });
+         return;
        }
      }
 
@@ -182,7 +202,9 @@ export default function CategoriesPage() {
      }
 
 
-     setCategories(prevCategories => prevCategories.filter(category => category.id !== id));
+     const updatedCategories = categories.filter(category => category.id !== id);
+     setCategories(updatedCategories);
+
      toast({
       title: "Category Deleted",
       description: `Category "${categoryToDelete.name}" has been removed.`,
@@ -198,7 +220,7 @@ export default function CategoriesPage() {
     setEditingCategoryId(id);
   }
 
-    function cancelEditing() {
+  function cancelEditing() {
     setEditingCategoryId(null);
     form.reset();
   }
@@ -206,6 +228,7 @@ export default function CategoriesPage() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
+      {/* Add/Edit Category Form Card */}
       <div className="lg:col-span-1">
         <Card>
           <CardHeader>
@@ -222,21 +245,20 @@ export default function CategoriesPage() {
                     <FormItem>
                       <FormLabel>Category Name</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g., Groceries, Utilities" {...field} />
+                        <Input placeholder="e.g., Groceries, Utilities" {...field} disabled={isLoading}/>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
-                 {/* Add other fields like description or icon selector here */}
               </CardContent>
               <CardFooter className="flex justify-between">
                 {editingCategoryId !== null && (
-                   <Button type="button" variant="outline" onClick={cancelEditing}>
+                   <Button type="button" variant="outline" onClick={cancelEditing} disabled={isLoading}>
                      Cancel
                    </Button>
                  )}
-                <Button type="submit" className={editingCategoryId === null ? "w-full" : ""}>
+                <Button type="submit" className={editingCategoryId === null ? "w-full" : ""} disabled={isLoading}>
                   {editingCategoryId !== null ? <Edit className="mr-2 h-4 w-4" /> : <PlusCircle className="mr-2 h-4 w-4" />}
                   {editingCategoryId !== null ? "Update Category" : "Add Category"}
                 </Button>
@@ -246,6 +268,7 @@ export default function CategoriesPage() {
         </Card>
       </div>
 
+      {/* Category List Card */}
       <div className="lg:col-span-2">
         <Card>
           <CardHeader>
@@ -254,72 +277,77 @@ export default function CategoriesPage() {
           </CardHeader>
           <CardContent>
              <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    {/* <TableHead>Description</TableHead> */}
-                    <TableHead>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                    {categories.length === 0 && (
-                       <TableRow>
-                         <TableCell colSpan={2} className="text-center text-muted-foreground">
-                           No categories added yet.
-                         </TableCell>
-                       </TableRow>
-                    )}
-                  {categories.map((category) => (
-                    <TableRow key={category.id} className={editingCategoryId === category.id ? "bg-secondary" : ""}>
-                      <TableCell className="font-medium">
-                         <Badge variant="secondary"><Tag className="inline-block h-3 w-3 mr-1" />{category.name}</Badge>
-                      </TableCell>
-                      {/* <TableCell>{category.description || "-"}</TableCell> */}
-                      <TableCell className="space-x-1">
-                         <Button
-                           variant="ghost"
-                           size="icon"
-                           onClick={() => startEditing(category.id)}
-                           aria-label="Edit category"
-                           disabled={editingCategoryId === category.id} // Disable edit button when editing this item
-                         >
-                           <Edit className="h-4 w-4" />
-                         </Button>
-                         <AlertDialog>
-                           <AlertDialogTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="text-destructive hover:text-destructive"
-                                aria-label="Delete category"
-                                disabled={editingCategoryId === category.id} // Disable delete button when editing this item
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                           </AlertDialogTrigger>
-                           <AlertDialogContent>
-                             <AlertDialogHeader>
-                               <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                               <AlertDialogDescription>
-                                 This action cannot be undone. This will permanently delete the category "{category.name}". Make sure no expenses are using this category.
-                               </AlertDialogDescription>
-                             </AlertDialogHeader>
-                             <AlertDialogFooter>
-                               <AlertDialogCancel>Cancel</AlertDialogCancel>
-                               <AlertDialogAction
-                                className={buttonVariants({ variant: "destructive" })} // Apply destructive style to delete action
-                                onClick={() => deleteCategory(category.id)}>
-                                 Delete
-                               </AlertDialogAction>
-                             </AlertDialogFooter>
-                           </AlertDialogContent>
-                         </AlertDialog>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+             {isLoading ? (
+                 <div className="flex justify-center items-center p-4">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    <span className="ml-2 text-muted-foreground">Loading categories...</span>
+                </div>
+             ) : (
+                <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {categories.length === 0 && (
+                           <TableRow>
+                             <TableCell colSpan={2} className="text-center text-muted-foreground py-4">
+                               No categories added yet.
+                             </TableCell>
+                           </TableRow>
+                        )}
+                        {categories.map((category) => (
+                        <TableRow key={category.id} className={editingCategoryId === category.id ? "bg-secondary" : ""}>
+                          <TableCell className="font-medium">
+                             <Badge variant="secondary"><Tag className="inline-block h-3 w-3 mr-1" />{category.name}</Badge>
+                          </TableCell>
+                          <TableCell className="space-x-1">
+                             <Button
+                               variant="ghost"
+                               size="icon"
+                               onClick={() => startEditing(category.id)}
+                               aria-label="Edit category"
+                               disabled={editingCategoryId === category.id} // Disable edit button when editing this item
+                             >
+                               <Edit className="h-4 w-4" />
+                             </Button>
+                             <AlertDialog>
+                               <AlertDialogTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="text-destructive hover:text-destructive"
+                                    aria-label="Delete category"
+                                    disabled={editingCategoryId === category.id} // Disable delete button when editing this item
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                               </AlertDialogTrigger>
+                               <AlertDialogContent>
+                                 <AlertDialogHeader>
+                                   <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                                   <AlertDialogDescription>
+                                     This action cannot be undone. This will permanently delete the category "{category.name}". Make sure no expenses are using this category.
+                                   </AlertDialogDescription>
+                                 </AlertDialogHeader>
+                                 <AlertDialogFooter>
+                                   <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                   <AlertDialogAction
+                                    className={buttonVariants({ variant: "destructive" })} // Apply destructive style to delete action
+                                    onClick={() => deleteCategory(category.id)}>
+                                     Delete
+                                   </AlertDialogAction>
+                                 </AlertDialogFooter>
+                               </AlertDialogContent>
+                             </AlertDialog>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
              </div>
           </CardContent>
         </Card>
@@ -327,8 +355,3 @@ export default function CategoriesPage() {
     </div>
   )
 }
-
-// Helper to get buttonVariants for AlertDialogAction
-import { buttonVariants } from "@/components/ui/button"
-
-    
