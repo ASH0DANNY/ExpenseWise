@@ -153,6 +153,7 @@ export default function ExpensesPage() {
         },
         getNextPageParam: (lastPage) => lastPage.lastVisible, // Use the last document as the cursor for the next page
         initialPageParam: null, // Add this line
+        staleTime: 1000 * 60 * 2, // Cache expense list for 2 minutes
    });
 
    // Flatten the pages into a single array of expenses
@@ -192,6 +193,25 @@ export default function ExpensesPage() {
   const isInitiallyLoading = isLoadingExpenses && !expensesPages?.pages.length;
   const loadError = errorExpenses || errorCategories || errorVendors;
 
+  // Helper function to ensure the summary document exists
+    async function ensureSummaryDocExists() {
+        const summaryDocRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
+        const summarySnap = await getDoc(summaryDocRef);
+        if (!summarySnap.exists()) {
+            console.log("Summary document not found, creating with defaults.");
+            try {
+                await setDoc(summaryDocRef, { totalExpenses: 0, expenseCount: 0 });
+                console.log("Summary document created successfully.");
+            } catch (error) {
+                console.error("Error creating summary document:", error);
+                // Handle error appropriately, maybe throw or return an error state
+                throw new Error("Failed to initialize summary data.");
+            }
+        }
+        return summaryDocRef; // Return the ref for use in mutations
+    }
+
+
   // Mutation for adding an expense
   const addExpenseMutation = useMutation({
      mutationFn: async (newExpenseData: ExpenseFormValues) => {
@@ -201,13 +221,15 @@ export default function ExpensesPage() {
           vendor: newExpenseData.vendor === "__none__" ? null : newExpenseData.vendor, // Handle "None" vendor
         };
 
+        // Ensure summary document exists before attempting to update it
+        const summaryDocRef = await ensureSummaryDocExists();
+
         // Use a batch write to add expense and update summary atomically
         const batch = writeBatch(db);
-        const expenseDocRef = doc(collection(db, "expenses")); // Create a ref without adding yet
+        const expenseDocRef = doc(expensesCollectionRef); // Generate ref for the new expense
         batch.set(expenseDocRef, dataToSave);
 
-        // Update summary document
-        const summaryDocRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
+        // Update summary document using the ensured ref
         batch.update(summaryDocRef, {
             totalExpenses: increment(newExpenseData.amount),
             expenseCount: increment(1)
@@ -218,9 +240,9 @@ export default function ExpensesPage() {
         return { id: expenseDocRef.id, ...newExpenseData }; // Return original data with new ID for UI feedback
     },
     onSuccess: (newExpense) => {
-        // Invalidate the first page of expenses to show the new one at the top
-        queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY], exact: true });
-        // Invalidate summary data
+        // Refetch the first page of expenses to show the new one at the top
+        queryClient.refetchQueries({ queryKey: [EXPENSES_QUERY_KEY], exact: true });
+        // Invalidate summary data to get the updated totals
         queryClient.invalidateQueries({ queryKey: [SUMMARY_DATA_QUERY_KEY] });
         // Invalidate recent expenses on dashboard if needed
         queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'recent'] });
@@ -243,19 +265,22 @@ export default function ExpensesPage() {
             description: error.message || "Could not add the expense.",
             variant: "destructive",
         });
+        console.error("Error adding expense:", error); // Log detailed error
     },
   });
 
   // Mutation for deleting an expense
    const deleteExpenseMutation = useMutation({
      mutationFn: async ({ id, amount }: { id: string, amount: number }) => {
+        // Ensure summary document exists before trying to update
+       const summaryDocRef = await ensureSummaryDocExists();
+
        // Use a batch write to delete expense and update summary atomically
         const batch = writeBatch(db);
         const expenseDocRef = doc(db, "expenses", id);
         batch.delete(expenseDocRef);
 
         // Update summary document
-        const summaryDocRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
         batch.update(summaryDocRef, {
             totalExpenses: increment(-amount), // Decrement total expenses
             expenseCount: increment(-1)     // Decrement count
@@ -265,7 +290,7 @@ export default function ExpensesPage() {
         return { id, amount }; // Return deleted ID and amount for UI feedback/cache update
      },
      onSuccess: ({ id: deletedId }) => {
-        // Optimistically update the cache
+        // Optimistically update the cache: remove the deleted expense from all pages
         queryClient.setQueryData<{ pages: { expenses: Expense[], lastVisible: any }[] } | undefined>(
           [EXPENSES_QUERY_KEY],
           (oldData) => {
@@ -280,9 +305,12 @@ export default function ExpensesPage() {
           }
         );
 
-        // Invalidate queries to ensure eventual consistency
+        // Invalidate queries to ensure eventual consistency and refetch potentially changed data
+        // Invalidate the entire expense list (all pages)
         queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY] });
+        // Invalidate summary data to reflect the deletion
         queryClient.invalidateQueries({ queryKey: [SUMMARY_DATA_QUERY_KEY] });
+        // Invalidate recent expenses on dashboard
         queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY, 'recent'] });
 
 
@@ -298,6 +326,7 @@ export default function ExpensesPage() {
             description: error.message || "Could not delete the expense.",
             variant: "destructive",
         });
+         console.error("Error deleting expense:", error); // Log detailed error
      },
    });
 
@@ -322,7 +351,7 @@ export default function ExpensesPage() {
   }
 
   if (loadError) {
-    return <div className="text-destructive">Error loading data: {(loadError as Error).message}</div>;
+    return <div className="text-destructive p-4">Error loading data: {(loadError as Error).message}</div>;
   }
 
   const NO_VENDOR_VALUE = "__none__"; // Unique value for "None" option
@@ -411,13 +440,13 @@ export default function ExpensesPage() {
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
+                          {isLoadingCategories && <SelectItem value="loading" disabled>Loading...</SelectItem>}
+                          {!isLoadingCategories && categories.length === 0 && <SelectItem value="-" disabled>No categories available</SelectItem>}
                           {categories.map((category) => (
                             <SelectItem key={category.id} value={category.name}>
                               {category.name}
                             </SelectItem>
                           ))}
-                          {/* Placeholder if no categories */}
-                          {categories.length === 0 && !isLoadingCategories && <SelectItem value="-" disabled>No categories available</SelectItem>}
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -438,6 +467,7 @@ export default function ExpensesPage() {
                           </SelectTrigger>
                          </FormControl>
                         <SelectContent>
+                           {isLoadingVendors && <SelectItem value="loading" disabled>Loading...</SelectItem>}
                            <SelectItem value={NO_VENDOR_VALUE}>None</SelectItem>
                            {vendors.map((vendor) => (
                             <SelectItem key={vendor.id} value={vendor.name}>
@@ -445,7 +475,7 @@ export default function ExpensesPage() {
                             </SelectItem>
                           ))}
                            {/* Placeholder if no vendors */}
-                           {vendors.length === 0 && !isLoadingVendors && <SelectItem value="-" disabled>No vendors available</SelectItem>}
+                           {!isLoadingVendors && vendors.length === 0 && <SelectItem value="-" disabled>No vendors available</SelectItem>}
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -522,7 +552,7 @@ export default function ExpensesPage() {
                             <TableCell className="whitespace-nowrap">{format(timestampToDate(expense.date), "yyyy-MM-dd")}</TableCell>
                             <TableCell><Badge variant="secondary">{expense.category}</Badge></TableCell>
                             <TableCell className="whitespace-nowrap">{expense.vendor || "-"}</TableCell>
-                             <TableCell className="max-w-[150px] sm:max-w-[250px] truncate whitespace-normal break-words" title={expense.notes ?? undefined}>
+                             <TableCell className="max-w-[150px] sm:max-w-[250px] whitespace-normal break-words" title={expense.notes ?? undefined}>
                                 {expense.notes || "-"}
                              </TableCell>
                             <TableCell className="text-right whitespace-nowrap">${expense.amount.toFixed(2)}</TableCell>
@@ -551,7 +581,7 @@ export default function ExpensesPage() {
                                         </AlertDialogDescription>
                                         </AlertDialogHeader>
                                         <AlertDialogFooter>
-                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                        <AlertDialogCancel disabled={deleteExpenseMutation.isPending}>Cancel</AlertDialogCancel>
                                         <AlertDialogAction
                                             className={buttonVariants({ variant: "destructive" })}
                                             onClick={() => deleteExpense(expense.id, expense.amount)}
@@ -573,16 +603,22 @@ export default function ExpensesPage() {
               </div>
               {/* Load More Trigger / Button */}
                 <div ref={loadMoreRef} className="mt-4 flex justify-center">
-                  <Button
-                    onClick={() => fetchNextPage()}
-                    disabled={!hasNextPage || isFetchingNextPage}
-                    variant="outline"
-                  >
-                    {isFetchingNextPage ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : null}
-                    {hasNextPage ? 'Load More' : 'No more expenses'}
-                  </Button>
+                  {hasNextPage && (
+                     <Button
+                        onClick={() => fetchNextPage()}
+                        disabled={isFetchingNextPage}
+                        variant="outline"
+                        size="sm" // Make button slightly smaller
+                     >
+                       {isFetchingNextPage ? (
+                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                       ) : null}
+                       Load More
+                     </Button>
+                  )}
+                   {!hasNextPage && expenses.length > 0 && !isInitiallyLoading && (
+                      <p className="text-sm text-muted-foreground">No more expenses</p>
+                   )}
                 </div>
           </CardContent>
         </Card>
@@ -590,3 +626,4 @@ export default function ExpensesPage() {
     </div>
   )
 }
+

@@ -15,16 +15,18 @@ import {
     getDoc,
     setDoc,
     updateDoc,
-    increment // Import increment for summary updates
+    increment, // Import increment for summary updates
+    writeBatch, // Import writeBatch for atomic operations
+    deleteDoc // Import deleteDoc
 } from "firebase/firestore";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card" // Added CardFooter, CardDescription
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { DollarSign, Landmark, TrendingDown, Loader2, Edit } from "lucide-react"
+import { DollarSign, Landmark, TrendingDown, Loader2, Edit, AlertTriangle } from "lucide-react" // Added AlertTriangle
 import { format } from "date-fns"
 import type { Expense, IncomeSetting, SummaryData } from "@/types"; // Import types including SummaryData
 import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button"; // Added buttonVariants
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -37,6 +39,17 @@ import {
   DialogTrigger,
   DialogClose,
 } from "@/components/ui/dialog"
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Label } from "@/components/ui/label";
 import { useIsClient } from "@/hooks/use-is-client"; // Import useIsClient
 
@@ -59,6 +72,26 @@ const timestampToDate = (timestamp: Timestamp | Date): Date => {
     return timestamp instanceof Timestamp ? timestamp.toDate() : timestamp;
 };
 
+// Helper function to delete all documents in a collection in batches
+async function deleteCollection(collectionRef: any, batchSize = 500) {
+    const q = query(collectionRef, limit(batchSize));
+    let snapshot = await getDocs(q);
+
+    // When there are no documents left, we are done
+    while (snapshot.size > 0) {
+        const batch = writeBatch(db);
+        snapshot.docs.forEach((doc) => {
+            batch.delete(doc.ref);
+        });
+
+        await batch.commit();
+
+        // Get the next batch
+        snapshot = await getDocs(q);
+    }
+}
+
+
 export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -67,7 +100,7 @@ export default function DashboardPage() {
   const isClient = useIsClient(); // Hook to check if running on the client
 
   // Fetch Income Setting
-  const { data: incomeSetting, isLoading: isLoadingIncome, error: errorIncome } = useQuery<IncomeSetting>({
+  const { data: incomeSetting, isLoading: isLoadingIncome, error: errorIncome } = useQuery<IncomeSetting | null>({
     queryKey: [INCOME_SETTING_QUERY_KEY],
     queryFn: async () => {
         const docRef = doc(settingsCollectionRef, INCOME_DOC_ID);
@@ -75,16 +108,15 @@ export default function DashboardPage() {
         if (docSnap.exists()) {
             return { id: docSnap.id, ...docSnap.data() } as IncomeSetting;
         } else {
-            // Create if it doesn't exist with default 0
-            await setDoc(docRef, { amount: 0 });
-            return { id: INCOME_DOC_ID, amount: 0 };
+            // Don't create here, handle potential null later or during reset
+            return null;
         }
     },
     staleTime: Infinity, // Income setting likely doesn't change often externally
   });
 
   // Fetch Summary Data (Total Expenses)
-   const { data: summaryData, isLoading: isLoadingSummary, error: errorSummary } = useQuery<SummaryData>({
+   const { data: summaryData, isLoading: isLoadingSummary, error: errorSummary } = useQuery<SummaryData | null>({
      queryKey: [SUMMARY_DATA_QUERY_KEY],
      queryFn: async () => {
        const docRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
@@ -92,9 +124,8 @@ export default function DashboardPage() {
        if (docSnap.exists()) {
          return { id: docSnap.id, ...docSnap.data() } as SummaryData;
        } else {
-         // If summary doesn't exist, create it (maybe calculate initial from existing expenses - complex, or just start at 0)
-         await setDoc(docRef, { totalExpenses: 0, expenseCount: 0 }); // Initialize
-         return { id: SUMMARY_DOC_ID, totalExpenses: 0, expenseCount: 0 };
+         // Don't create here, handle potential null later or during reset
+         return null;
        }
      },
      staleTime: 1000 * 60, // Stale after 1 minute, refetch periodically or rely on invalidation
@@ -121,12 +152,14 @@ export default function DashboardPage() {
   });
 
   // Combined loading state for UI elements that depend on multiple queries
+  // Let specific components handle their own loading if only one query is needed
   const isLoading = isLoadingIncome || isLoadingSummary || isLoadingExpenses;
   const loadError = errorIncome || errorSummary || errorExpenses;
 
 
   // Calculate balance using fetched income and summary
   const balance = React.useMemo(() => {
+    // Use default 0 if settings/summary are null (e.g., before first set/reset)
     const currentIncome = incomeSetting?.amount ?? 0;
     const totalExpenses = summaryData?.totalExpenses ?? 0;
     return currentIncome - totalExpenses;
@@ -137,17 +170,21 @@ export default function DashboardPage() {
    const updateIncomeMutation = useMutation({
      mutationFn: async (incomeAmount: number) => {
        const docRef = doc(settingsCollectionRef, INCOME_DOC_ID);
-       await setDoc(docRef, { amount: incomeAmount }, { merge: true }); // Use setDoc with merge to create or update
+       // Use setDoc with merge to create or update
+       await setDoc(docRef, { amount: incomeAmount }, { merge: true });
        return incomeAmount;
      },
      onSuccess: (updatedIncome) => {
         // Update the cache directly for immediate feedback
-        queryClient.setQueryData<IncomeSetting>([INCOME_SETTING_QUERY_KEY], (oldData) => ({
+        queryClient.setQueryData<IncomeSetting | null>([INCOME_SETTING_QUERY_KEY], (oldData) => ({
              ...(oldData ?? { id: INCOME_DOC_ID }), // Keep old data if exists, else provide default structure
              amount: updatedIncome,
          }));
         // Invalidate queries to ensure eventual consistency, though cache update is faster
-        // queryClient.invalidateQueries({ queryKey: [INCOME_SETTING_QUERY_KEY] }); // Optional if setQueryData is used
+        queryClient.invalidateQueries({ queryKey: [INCOME_SETTING_QUERY_KEY] });
+        // Also invalidate summary/balance related queries if income changes affect them
+        queryClient.invalidateQueries({ queryKey: [SUMMARY_DATA_QUERY_KEY] });
+
 
         toast({
             title: "Income Updated",
@@ -163,6 +200,44 @@ export default function DashboardPage() {
         });
      },
    });
+
+   // Mutation for resetting all application data
+   const resetDataMutation = useMutation({
+        mutationFn: async () => {
+            // 1. Delete all expenses
+            await deleteCollection(expensesCollectionRef);
+
+            // 2. Reset income and summary settings using a batch
+            const batch = writeBatch(db);
+            const incomeDocRef = doc(settingsCollectionRef, INCOME_DOC_ID);
+            const summaryDocRef = doc(settingsCollectionRef, SUMMARY_DOC_ID);
+
+            batch.set(incomeDocRef, { amount: 0 }); // Reset income to 0
+            batch.set(summaryDocRef, { totalExpenses: 0, expenseCount: 0 }); // Reset summary
+
+            await batch.commit();
+        },
+        onSuccess: () => {
+            // Invalidate all relevant queries to refetch fresh, reset data
+            queryClient.invalidateQueries({ queryKey: [EXPENSES_QUERY_KEY] });
+            queryClient.invalidateQueries({ queryKey: [INCOME_SETTING_QUERY_KEY] });
+            queryClient.invalidateQueries({ queryKey: [SUMMARY_DATA_QUERY_KEY] });
+
+            toast({
+                title: "Application Data Reset",
+                description: "All expenses have been deleted and income/summary reset to zero.",
+                variant: "destructive", // Use destructive variant for reset confirmation
+            });
+        },
+        onError: (error: Error) => {
+            toast({
+                title: "Error Resetting Data",
+                description: error.message || "Could not reset application data. Please try again.",
+                variant: "destructive",
+            });
+        },
+   });
+
 
    // Handle opening the dialog and setting the initial input value
    React.useEffect(() => {
@@ -187,23 +262,29 @@ export default function DashboardPage() {
         }
    };
 
+   const handleResetData = () => {
+       resetDataMutation.mutate();
+   }
 
-  if (!isClient && isLoading) {
-      // Render skeletons or a loading indicator during SSR or initial client load
-      return (
-         <div className="space-y-6 animate-pulse">
-            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
-                 <Skeleton className="h-24 rounded-lg" />
-                 <Skeleton className="h-24 rounded-lg" />
-                 <Skeleton className="h-24 rounded-lg" />
-            </div>
-             <Skeleton className="h-[250px] rounded-lg" />
-         </div>
-      );
-  }
 
-  if (loadError) {
-    return <div className="text-destructive">Error loading dashboard data: {(loadError as Error).message}</div>;
+  // Render loading skeletons only on the client during initial load
+   if (!isClient) {
+       // Basic structure during SSR/prerender
+       return (
+          <div className="space-y-6">
+             <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
+                  <Skeleton className="h-24 rounded-lg" />
+                  <Skeleton className="h-24 rounded-lg" />
+                  <Skeleton className="h-24 rounded-lg" />
+             </div>
+              <Skeleton className="h-[250px] rounded-lg" />
+          </div>
+       );
+   }
+
+
+  if (loadError && isClient) {
+    return <div className="text-destructive p-4">Error loading dashboard data: {(loadError as Error).message}</div>;
   }
 
 
@@ -217,9 +298,8 @@ export default function DashboardPage() {
             <CardTitle className="text-sm font-medium">Monthly Income</CardTitle>
              <Dialog open={isIncomeDialogOpen} onOpenChange={setIsIncomeDialogOpen}>
                  <DialogTrigger asChild>
-                     <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-primary">
+                     <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-primary" aria-label="Edit Income">
                          <Edit className="h-4 w-4" />
-                         <span className="sr-only">Edit Income</span>
                      </Button>
                  </DialogTrigger>
                  <DialogContent className="sm:max-w-[425px]">
@@ -268,6 +348,9 @@ export default function DashboardPage() {
             ) : (
               <div className="text-2xl font-bold text-primary">${(incomeSetting?.amount ?? 0).toFixed(2)}</div>
             )}
+             {!incomeSetting && !isLoadingIncome && (
+                <p className="text-xs text-muted-foreground mt-1">Click the edit icon to set your income.</p>
+            )}
           </CardContent>
         </Card>
 
@@ -283,8 +366,7 @@ export default function DashboardPage() {
              ) : (
                <div className="text-2xl font-bold text-destructive">${(summaryData?.totalExpenses ?? 0).toFixed(2)}</div>
              )}
-             {/* Optionally show expense count */}
-             {/* <p className="text-xs text-muted-foreground">{summaryData?.expenseCount ?? 0} transactions</p> */}
+             <p className="text-xs text-muted-foreground mt-1">{summaryData?.expenseCount ?? 0} expenses recorded</p>
           </CardContent>
         </Card>
 
@@ -295,13 +377,14 @@ export default function DashboardPage() {
             <Landmark className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-             {isLoading ? ( // Use combined loading state here
+             {isLoadingIncome || isLoadingSummary ? ( // Check loading for both dependencies
                <Skeleton className="h-8 w-3/4" />
              ) : (
                <div className={`text-2xl font-bold ${balance >= 0 ? '' : 'text-destructive'}`}>
                     ${balance.toFixed(2)}
                 </div>
              )}
+             <p className="text-xs text-muted-foreground mt-1">Income minus Total Expenses</p>
           </CardContent>
         </Card>
       </div>
@@ -329,11 +412,11 @@ export default function DashboardPage() {
                <Table>
                  <TableHeader>
                    <TableRow>
-                     <TableHead>Date</TableHead>
+                     <TableHead className="whitespace-nowrap">Date</TableHead>
                      <TableHead>Category</TableHead>
                      <TableHead>Vendor</TableHead>
                      <TableHead>Notes</TableHead>
-                     <TableHead className="text-right">Amount</TableHead>
+                     <TableHead className="text-right whitespace-nowrap">Amount</TableHead>
                    </TableRow>
                  </TableHeader>
                  <TableBody>
@@ -354,6 +437,60 @@ export default function DashboardPage() {
            </div>
         </CardContent>
       </Card>
+
+       {/* Reset Data Card - Added */}
+        <Card className="border-destructive">
+            <CardHeader>
+                <CardTitle className="flex items-center text-destructive">
+                    <AlertTriangle className="mr-2 h-5 w-5" /> Danger Zone
+                </CardTitle>
+                <CardDescription>
+                    Reset all application data to its initial state. This action is irreversible.
+                </CardDescription>
+            </CardHeader>
+            <CardContent>
+                <p className="text-sm text-muted-foreground">
+                    Clicking the button below will permanently delete all recorded expenses
+                    and reset your monthly income and summary totals to zero.
+                </p>
+            </CardContent>
+            <CardFooter>
+                <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                        <Button variant="destructive" disabled={resetDataMutation.isPending}>
+                           {resetDataMutation.isPending ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <AlertTriangle className="mr-2 h-4 w-4" />
+                            )}
+                            Reset Application Data
+                        </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                        <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This action cannot be undone. This will permanently delete all your
+                            expense records and reset your income setting and expense summary.
+                        </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                        <AlertDialogCancel disabled={resetDataMutation.isPending}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            className={buttonVariants({ variant: "destructive" })}
+                            onClick={handleResetData}
+                            disabled={resetDataMutation.isPending}
+                        >
+                           {resetDataMutation.isPending ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : null}
+                           Yes, Reset Data
+                        </AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
+            </CardFooter>
+        </Card>
     </div>
   )
 }

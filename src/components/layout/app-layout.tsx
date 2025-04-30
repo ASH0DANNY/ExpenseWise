@@ -15,9 +15,9 @@ import {
   SidebarMenu,
   SidebarMenuItem,
   SidebarMenuButton,
-  SidebarMenuSub,
-  SidebarMenuSubItem,
-  SidebarMenuSubButton,
+  // SidebarMenuSub, // Commented out as unused
+  // SidebarMenuSubItem, // Commented out as unused
+  // SidebarMenuSubButton, // Commented out as unused
 } from "@/components/ui/sidebar"
 import {
   LayoutDashboard,
@@ -25,9 +25,9 @@ import {
   Users,
   Tags,
   Wallet,
-  Settings,
+  // Settings, // Removed unused import
 } from "lucide-react"
-import { Button } from "@/components/ui/button"
+// import { Button } from "@/components/ui/button" // Commented out as unused
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useIsMobile } from "@/hooks/use-mobile" // Import useIsMobile
 
@@ -113,7 +113,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset className="p-4 md:p-6">
+      <SidebarInset className="p-4 md:p-6 bg-background"> {/* Added bg-background for content area */}
         <div className="flex justify-between items-center mb-4 md:mb-6">
            {/* Show trigger only on mobile */}
            {isMobile && <SidebarTrigger />}
@@ -124,7 +124,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
              {!isMobile && <SidebarTrigger />} {/* Show trigger on desktop */}
            </div>
         </div>
-        {children}
+        <main className="flex-grow"> {/* Added flex-grow to main content */}
+          {children}
+        </main>
       </SidebarInset>
     </SidebarProvider>
   )
